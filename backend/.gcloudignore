@@ -6,6 +6,11 @@ node_modules
 .npm-cache
 .env
 .env.*
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 database/*.sqlite
 database/*.sqlite-journal
 database/*.db

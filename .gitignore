@@ -37,6 +37,13 @@ coverage/
 *.tmp
 *.temp
 
+# Certificados e chaves locais
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
 # Auxiliares
 auxiliares/
 !legacy/auxiliares/

@@ -136,23 +136,32 @@ O que precisa acontecer:
 1. aplique `backend/database/supabase-schema.sql` no banco
 2. depois suba o backend
 
+Esse schema tambem:
+
+- cria `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages`
+- ativa RLS nessas tabelas
+- revoga acesso dos papeis `anon` e `authenticated`
+- protege essas tabelas contra exposicao acidental pela Data API do Supabase
+- deixa o chat persistente, carregando as ultimas 20 mensagens visiveis
+- em Postgres puro sem os papeis do Supabase, o SQL ignora apenas essas politicas especificas e segue criando as tabelas
+
 ### O que o backend cria automaticamente
 
 Ao iniciar, o backend faz alguns ajustes incrementais:
 
 - valida a conexao
-- exige que `public.logs` exista
-- adiciona colunas faltantes em `logs`
-- cria `public.game_scores` se ela nao existir
-- cria alguns indices e colunas adicionais
+- cria `public.event_logs`, `public.users`, `public.player_profiles`, `public.actor_stats` e `public.chat_messages` se faltarem
+- cria alguns indices e politicas de seguranca se faltarem
+- sincroniza apelido/cor do jogador em `public.player_profiles`
+- usa `PLAYER_CHAT_BLOCKED_WORDS` para a moderacao simples do chat
 
 ### O que ele nao faz sozinho
 
-Se a tabela `public.logs` nao existir, o backend encerra a inicializacao com erro.
+Se o banco estiver fora do schema canonico atual, o backend nao reorganiza historico legado sozinho.
 
 Entao o correto e:
 
-- primeiro aplicar `backend/database/supabase-schema.sql`
+- alinhar ou recriar o banco para o schema de `backend/database/supabase-schema.sql`
 - depois subir o backend
 
 ## Google OAuth local
@@ -296,15 +305,17 @@ Se aparecer `426 Upgrade Required`, voce nao esta falando com o backend correto 
 
 ## Problemas comuns
 
-### `logs table is missing`
+### O banco nao bate com o schema atual
 
 Causa:
 
-- o schema inicial nao foi aplicado
+- o banco nao esta no schema canonico atual
+- tabelas esperadas como `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages` nao existem ou estao incompletas
 
 Correcao:
 
-- rode o SQL de `backend/database/supabase-schema.sql` no banco
+- aplique `backend/database/supabase-schema.sql`
+- ou recrie/aline o banco antes de subir o backend
 
 ### `426 Upgrade Required`
 

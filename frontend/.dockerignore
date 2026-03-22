@@ -4,6 +4,11 @@
 .dockerignore
 .env
 .env.*
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
 node_modules
 .npm-cache
 *.log

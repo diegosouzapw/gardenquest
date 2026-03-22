@@ -474,7 +474,7 @@
         const item = document.createElement('article');
         item.className = 'chat-entry';
 
-        if (entry?.playerId === user.id) {
+        if (entry?.isSelf) {
             item.classList.add('self');
         }
 

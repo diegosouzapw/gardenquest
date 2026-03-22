@@ -1,10 +1,13 @@
 const config = require('../config');
 const {
   getGameActorProfile,
+  getRecentVisibleChatMessages,
   getTopGameScores,
   getTopSoccerScorers,
   incrementGameActorSoccerGoals,
+  insertChatMessage,
   insertLog,
+  upsertPlayerProfile,
   upsertGameScore,
 } = require('../database/postgres');
 const { createOpenAiDecisionClient } = require('../services/openai-client');
@@ -48,6 +51,14 @@ const LEADERBOARD_REFRESH_MS = 10000;
 const PLAYER_NICKNAME_MAX_LENGTH = 24;
 const DEFAULT_PLAYER_OUTFIT_COLOR = '#2563eb';
 const PLAYER_CHAT_HISTORY_LIMIT = 20;
+const DEFAULT_CHAT_BLOCKED_WORDS = Object.freeze([
+  'merda',
+  'porra',
+  'caralho',
+  'pqp',
+  'fdp',
+  'otario',
+]);
 
 const AI_SPAWN_POINT = Object.freeze({ x: -3, y: 0, z: 15 });
 
@@ -129,6 +140,60 @@ function normalizeComparableName(value) {
     .toLowerCase();
 }
 
+function normalizeModerationText(value) {
+  const normalized = sanitizeText(value, 255);
+  if (!normalized) {
+    return '';
+  }
+
+  return normalized
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function getBlockedChatWords() {
+  return (config.PLAYER_CHAT_BLOCKED_WORDS.length > 0
+    ? config.PLAYER_CHAT_BLOCKED_WORDS
+    : DEFAULT_CHAT_BLOCKED_WORDS)
+    .map((word) => normalizeModerationText(word))
+    .filter(Boolean);
+}
+
+function findBlockedChatWord(message) {
+  const normalizedMessage = normalizeModerationText(message);
+  if (!normalizedMessage) {
+    return null;
+  }
+
+  for (const blockedWord of getBlockedChatWords()) {
+    if (!blockedWord) {
+      continue;
+    }
+
+    if (blockedWord.includes(' ')) {
+      if (normalizedMessage.includes(blockedWord)) {
+        return blockedWord;
+      }
+      continue;
+    }
+
+    const pattern = new RegExp(`(^|\\s)${escapeRegex(blockedWord)}(\\s|$)`, 'u');
+    if (pattern.test(normalizedMessage)) {
+      return blockedWord;
+    }
+  }
+
+  return null;
+}
+
 function areNamesEquivalent(left, right) {
   const normalizedLeft = normalizeComparableName(left);
   const normalizedRight = normalizeComparableName(right);
@@ -173,10 +238,6 @@ function buildPlayerLogDetails(player, details = null) {
   detailParts.push(`game_nickname=${formatLogDetailValue(player?.name || 'Jogador')}`);
   detailParts.push(`nickname_owner_user_id=${formatLogDetailValue(player?.id || 'unknown')}`);
 
-  if (player?.realName) {
-    detailParts.push(`nickname_owner_real_name=${formatLogDetailValue(player.realName)}`);
-  }
-
   if (player?.appearance?.outfitColor) {
     detailParts.push(`outfit_color=${formatLogDetailValue(player.appearance.outfitColor)}`);
   }
@@ -187,7 +248,7 @@ function buildPlayerLogDetails(player, details = null) {
 function buildPlayerLogContext(player, { userAgent = 'backend-game', details = null } = {}) {
   return {
     userId: player?.id || null,
-    userName: player?.realName || player?.name || 'Jogador',
+    userName: player?.name || 'Jogador',
     userAgent,
     details: buildPlayerLogDetails(player, details),
   };
@@ -582,7 +643,6 @@ class AiGameEngine {
       soccerLeaderboardLastUpdatedAt: 0,
       soccerLeaderboardRefreshInFlight: false,
       playerChat: [],
-      nextChatEntryId: 1,
       nextDroppedAppleId: 1,
       ai: {
         id: 'npc-gardener-01',
@@ -627,6 +687,9 @@ class AiGameEngine {
     });
     this.refreshSoccerLeaderboard().catch((error) => {
       this.logger.error('Initial soccer leaderboard refresh failed:', error.message);
+    });
+    this.loadRecentChatMessages().catch((error) => {
+      this.logger.error('Initial chat history load failed:', error.message);
     });
 
     this.simulationHandle = setInterval(() => {
@@ -681,7 +744,6 @@ class AiGameEngine {
           : null,
         entries: this.state.leaderboard.map((entry) => ({
           rank: entry.rank,
-          actorId: entry.actorId,
           actorType: entry.actorType,
           actorName: entry.actorName,
           currentScore: entry.currentScore,
@@ -696,7 +758,6 @@ class AiGameEngine {
           : null,
         entries: this.state.soccerLeaderboard.map((entry) => ({
           rank: entry.rank,
-          actorId: entry.actorId,
           actorType: entry.actorType,
           actorName: entry.actorName,
           soccerGoals: entry.soccerGoals,
@@ -705,7 +766,7 @@ class AiGameEngine {
       playerChat: {
         entries: this.state.playerChat.map((entry) => ({
           id: entry.id,
-          playerId: entry.playerId,
+          isSelf: entry.playerId === player?.id,
           playerName: entry.playerName,
           message: entry.message,
           createdAt: new Date(entry.createdAt).toISOString(),
@@ -1031,14 +1092,22 @@ class AiGameEngine {
       };
     }
 
+    const blockedWord = findBlockedChatWord(sanitizedMessage);
+    if (blockedWord) {
+      this.logEvent('player_chat_blocked', buildPlayerLogContext(player, {
+        details: `reason=${formatLogDetailValue(`blocked_word:${blockedWord}`)}`,
+      }));
+
+      return {
+        ok: false,
+        statusCode: 400,
+        publicError: 'Sua mensagem nao pode ser enviada por causa das regras de moderacao.',
+      };
+    }
+
     player.speech = sanitizedMessage;
     player.speechExpiresAt = Date.now() + PLAYER_SPEECH_DURATION_MS;
-    this.appendPlayerChatEntry(player, sanitizedMessage);
-    this.logEvent('player_chat_message', buildPlayerLogContext(player, {
-      details: `message=${formatLogDetailValue(sanitizedMessage)}`,
-    }));
-
-    return { ok: true };
+    return this.appendPlayerChatEntry(player, sanitizedMessage);
   }
 
   performKickBall(actor, eventName, logContext, { clearMovement = false } = {}) {
@@ -1092,19 +1161,35 @@ class AiGameEngine {
     return true;
   }
 
-  appendPlayerChatEntry(player, message) {
-    this.state.playerChat.push({
-      id: this.state.nextChatEntryId,
-      playerId: player.id,
-      playerName: player.name || 'Jogador',
+  async appendPlayerChatEntry(player, message) {
+    const persistedEntry = await insertChatMessage({
+      userId: player?.id || null,
+      playerName: player?.name || 'Jogador',
       message,
-      createdAt: Date.now(),
+      moderationStatus: 'visible',
     });
-    this.state.nextChatEntryId += 1;
+
+    if (!persistedEntry) {
+      return {
+        ok: false,
+        statusCode: 500,
+        publicError: 'Nao foi possivel salvar a mensagem agora.',
+      };
+    }
+
+    this.state.playerChat.push({
+      id: persistedEntry.id,
+      playerId: persistedEntry.userId,
+      playerName: persistedEntry.playerName,
+      message: persistedEntry.message,
+      createdAt: new Date(persistedEntry.createdAt).getTime(),
+    });
 
     if (this.state.playerChat.length > PLAYER_CHAT_HISTORY_LIMIT) {
       this.state.playerChat.splice(0, this.state.playerChat.length - PLAYER_CHAT_HISTORY_LIMIT);
     }
+
+    return { ok: true };
   }
 
   updatePlayerProfile(player, profile) {
@@ -2369,9 +2454,30 @@ class AiGameEngine {
     }
   }
 
+  async loadRecentChatMessages() {
+    const recentMessages = await getRecentVisibleChatMessages(PLAYER_CHAT_HISTORY_LIMIT);
+    this.state.playerChat = recentMessages.map((entry) => ({
+      id: entry.id,
+      playerId: entry.userId,
+      playerName: entry.playerName || 'Jogador',
+      message: entry.message,
+      createdAt: new Date(entry.createdAt).getTime(),
+    }));
+  }
+
   persistActorStats(actor) {
     if (!actor?.id) {
       return;
+    }
+
+    if (actor.actorType === 'player') {
+      upsertPlayerProfile({
+        userId: actor.id,
+        nickname: actor.name || buildDefaultPlayerNickname(actor.id),
+        outfitColor: actor.appearance?.outfitColor || DEFAULT_PLAYER_OUTFIT_COLOR,
+      }).catch((error) => {
+        this.logger.error('Player profile persist failed:', error.message);
+      });
     }
 
     upsertGameScore({

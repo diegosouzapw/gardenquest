@@ -299,6 +299,19 @@ function readEmailListEnv(name) {
     .filter(Boolean);
 }
 
+function readStringListEnv(name) {
+  const value = process.env[name];
+
+  if (typeof value !== 'string' || !value.trim()) {
+    return [];
+  }
+
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 const cookieSecure =
   process.env.COOKIE_SECURE != null
     ? process.env.COOKIE_SECURE === 'true'
@@ -351,7 +364,7 @@ const config = {
   SUPABASE_DB_SSL_CA_PATH: readEnv('SUPABASE_DB_SSL_CA_PATH'),
 
   OPENAI_API_KEY: readEnv('OPENAI_API_KEY'),
-  OPENAI_MODEL: readEnv('OPENAI_MODEL', { defaultValue: 'gpt-5.4-mini' }),
+  OPENAI_MODEL: readEnv('OPENAI_MODEL', { defaultValue: 'gpt-5.4-nano' }),
   OPENAI_API_TIMEOUT_MS: readIntegerEnv('OPENAI_API_TIMEOUT_MS', 10000),
   OPENAI_PROJECT_ID: readEnv('OPENAI_PROJECT_ID'),
   OPENAI_ORGANIZATION_ID: readEnv('OPENAI_ORGANIZATION_ID'),
@@ -367,6 +380,7 @@ const config = {
   PLAYER_MOVE_SPEED: readFloatEnv('PLAYER_MOVE_SPEED', 8),
   PLAYER_RUN_SPEED: readFloatEnv('PLAYER_RUN_SPEED', 12.5),
   PLAYER_CHAT_MAX_CHARS: readIntegerEnv('PLAYER_CHAT_MAX_CHARS', 72),
+  PLAYER_CHAT_BLOCKED_WORDS: readStringListEnv('PLAYER_CHAT_BLOCKED_WORDS'),
   PLAYER_IDLE_TIMEOUT_MS: readIntegerEnv('PLAYER_IDLE_TIMEOUT_MS', 20000),
 
   NODE_ENV: nodeEnv,

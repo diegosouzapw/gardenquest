@@ -1,10 +1,10 @@
 # Garden Quest
 
-Garden Quest e um projeto web com backend em Node.js/Express e frontend estatico em HTML/CSS/JavaScript. O sistema usa Google OAuth para autenticacao, Supabase/PostgreSQL para persistencia de logs e ranking, e uma IA opcional via OpenAI para controlar um NPC no jardim.
+Garden Quest e um projeto web com backend em Node.js/Express e frontend estatico em HTML/CSS/JavaScript. O sistema usa Google OAuth para autenticacao, Supabase/PostgreSQL para persistencia de eventos, usuarios, perfis, chat e ranking, e uma IA opcional via OpenAI para controlar um NPC no jardim.
 
 ## Estrutura
 
-- `backend/`: API, autenticacao, seguranca, logs, persistencia e simulacao do jogo.
+- `backend/`: API, autenticacao, seguranca, eventos, persistencia e simulacao do jogo.
 - `frontend/public/`: paginas estaticas do login, jogo e dashboard.
 - `backend/game/`: motor da simulacao, regras do mundo e validacao de comandos.
 - `backend/database/`: integracao PostgreSQL/Supabase e schema SQL.
@@ -172,8 +172,10 @@ Os arquivos `.dockerignore` e `.gcloudignore` foram preparados para evitar envio
 - Comandos do jogador passam por validacao e deteccao de payload suspeito.
 - O dashboard administrativo usa a sessao Google e uma allowlist por email configurada em `ADMIN_GOOGLE_EMAILS`.
 - Os segredos reais nao devem ficar em git nem em build contexts.
+- O schema do banco ativa RLS e revoga acesso de `anon` e `authenticated` nas tabelas `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages`, para que esses dados nao fiquem expostos pela Data API do Supabase. O backend continua acessando por conexao direta ao Postgres.
+- O chat do jogo agora e persistente em `chat_messages`, carrega as ultimas 20 mensagens ao iniciar e pode bloquear termos configurados em `PLAYER_CHAT_BLOCKED_WORDS`.
 
 ## Observacoes de manutencao
 
-- `legacy/` contem arquivos removidos do fluxo principal, mas preservados por historico.
-- O backend depende da tabela `logs` e da tabela `game_scores`; aplique `backend/database/supabase-schema.sql` antes de subir o servidor.
+- Em banco novo, aplique `backend/database/supabase-schema.sql` antes de subir o servidor para criar `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages`.
+- O projeto agora assume apenas o schema canonico. Se existir um banco antigo fora desse modelo, alinhe-o manualmente antes do deploy ou recrie o schema a partir de `backend/database/supabase-schema.sql`.

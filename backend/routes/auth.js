@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 const config = require('../config');
-const { insertLog } = require('../database/postgres');
+const { insertLog, upsertUser } = require('../database/postgres');
 
 const AUTH_COOKIE_NAME = 'auth_token';
 const OAUTH_STATE_COOKIE_NAME = 'oauth_state';
@@ -191,7 +191,24 @@ function getNormalizedUser(decodedToken) {
     id: normalizeText(decodedToken?.id, 128),
     name: normalizeText(decodedToken?.name, 255),
     email: normalizeEmail(decodedToken?.email),
+    picture: normalizeText(decodedToken?.picture, 2048),
   };
+}
+
+function syncUserRecord(user) {
+  if (!user?.id) {
+    return;
+  }
+
+  upsertUser({
+    id: user.id,
+    email: user.email || null,
+    displayName: user.name || null,
+    avatarUrl: user.picture || null,
+    touchLastSeen: true,
+  }).catch((error) => {
+    console.error('User sync error:', error.message);
+  });
 }
 
 function createAuthRoutes({ gameEngine = null } = {}) {
@@ -244,6 +261,13 @@ function createAuthRoutes({ gameEngine = null } = {}) {
       const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
       const { data: userInfo } = await oauth2.userinfo.get();
 
+      syncUserRecord({
+        id: normalizeText(userInfo.id, 128),
+        name: normalizeText(userInfo.name, 255),
+        email: normalizeEmail(userInfo.email),
+        picture: normalizeText(userInfo.picture, 2048),
+      });
+
       const jwtToken = jwt.sign(
         {
           id: userInfo.id,
@@ -272,6 +296,7 @@ function createAuthRoutes({ gameEngine = null } = {}) {
     try {
       const decoded = jwt.verify(token, config.JWT_SECRET);
       const user = getNormalizedUser(decoded);
+      syncUserRecord(user);
       trackSilentEvent(req, 'page_view', user);
       trackSilentEvent(req, 'connect', user);
       res.json({
