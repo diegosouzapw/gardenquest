@@ -27,15 +27,12 @@
     const SOCCER_GOAL_CELEBRATION_MS = 3000;
     const PROFILE_STORAGE_KEY_PREFIX = 'garden-quest-player-profile:';
     const CHAT_WIDGET_STORAGE_KEY = 'garden-quest-player-chat:minimized';
-    const HUD_CONTROLS_STORAGE_KEY = 'garden-quest-hud-controls:minimized';
+    const LEADERBOARD_PANEL_STORAGE_KEY = 'garden-quest-leaderboard:minimized';
     const TOUCH_MOVEMENT_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowleft', 'arrowdown', 'arrowright', 'shift']);
     const isTouchDevice = window.matchMedia('(pointer: coarse)').matches || Number(navigator.maxTouchPoints || 0) > 0;
 
     const hudName = document.getElementById('hudName');
     const hudAvatar = document.getElementById('hudAvatar');
-    const hudControls = document.getElementById('hudControls');
-    const hudControlsContent = document.getElementById('hudControlsContent');
-    const hudControlsToggleBtn = document.getElementById('hudControlsToggleBtn');
     const loadingScreen = document.getElementById('loadingScreen');
     const mobileControls = document.getElementById('mobileControls');
     const canvas = document.getElementById('gameCanvas');
@@ -48,10 +45,16 @@
     const chatCollapsedToggle = document.getElementById('chatCollapsedToggle');
     const chatCollapsedBadge = document.getElementById('chatCollapsedBadge');
     const chatMinimizeBtn = document.getElementById('chatMinimizeBtn');
+    const leaderboardPanel = document.getElementById('leaderboardPanel');
+    const leaderboardSections = document.getElementById('leaderboardSections');
+    const leaderboardMinimizeBtn = document.getElementById('leaderboardMinimizeBtn');
     const leaderboardBody = document.getElementById('leaderboardBody');
     const leaderboardUpdated = document.getElementById('leaderboardUpdated');
     const soccerLeaderboardBody = document.getElementById('soccerLeaderboardBody');
     const soccerLeaderboardUpdated = document.getElementById('soccerLeaderboardUpdated');
+    const commandsPanel = document.getElementById('commandsPanel');
+    const commandsToggleBtn = document.getElementById('commandsToggleBtn');
+    const commandsCloseBtn = document.getElementById('commandsCloseBtn');
     const profilePanel = document.getElementById('profilePanel');
     const profileForm = document.getElementById('profileForm');
     const profileToggleBtn = document.getElementById('profileToggleBtn');
@@ -64,7 +67,7 @@
     let chatMaxChars = Number(chatInput?.maxLength) || 72;
     let nicknameMaxChars = Number(profileNicknameInput?.maxLength) || PLAYER_NICKNAME_MAX_LENGTH;
     let isChatMinimized = loadChatWidgetMinimized();
-    let isHudControlsMinimized = loadHudControlsMinimized();
+    let isLeaderboardMinimized = loadLeaderboardPanelMinimized();
 
     const defaultProfile = buildDefaultProfile(user);
     const initialProfile = loadStoredProfile(user);
@@ -90,13 +93,14 @@
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
     const PLAYER_CAMERA_FOCUS_HEIGHT = 3.35;
     const CAMERA_MIN_DISTANCE = 0.05;
+    const CAMERA_MIN_RELATIVE_HEIGHT = 1.1;
     const cameraState = {
         yaw: 0.75,
         pitch: 0.52,
         distance: 20,
         minDistance: CAMERA_MIN_DISTANCE,
         maxDistance: 28,
-        minPitch: 0.2,
+        minPitch: -0.9,
         maxPitch: 1.05,
         isPointerLocked: false,
     };
@@ -211,17 +215,17 @@
         } catch (error) {}
     }
 
-    function loadHudControlsMinimized() {
+    function loadLeaderboardPanelMinimized() {
         try {
-            return window.localStorage.getItem(HUD_CONTROLS_STORAGE_KEY) === '1';
+            return window.localStorage.getItem(LEADERBOARD_PANEL_STORAGE_KEY) === '1';
         } catch (error) {
             return false;
         }
     }
 
-    function saveHudControlsMinimized(value) {
+    function saveLeaderboardPanelMinimized(value) {
         try {
-            window.localStorage.setItem(HUD_CONTROLS_STORAGE_KEY, value ? '1' : '0');
+            window.localStorage.setItem(LEADERBOARD_PANEL_STORAGE_KEY, value ? '1' : '0');
         } catch (error) {}
     }
 
@@ -377,27 +381,53 @@
         saveChatWidgetMinimized(isChatMinimized);
     }
 
-    function setHudControlsMinimized(nextValue) {
-        isHudControlsMinimized = Boolean(nextValue);
+    function setLeaderboardMinimized(nextValue) {
+        isLeaderboardMinimized = Boolean(nextValue);
 
-        if (hudControls) {
-            hudControls.classList.toggle('minimized', isHudControlsMinimized);
+        if (leaderboardPanel) {
+            leaderboardPanel.classList.toggle('minimized', isLeaderboardMinimized);
         }
 
-        if (hudControlsContent) {
-            hudControlsContent.hidden = isHudControlsMinimized;
+        if (leaderboardSections) {
+            leaderboardSections.hidden = isLeaderboardMinimized;
         }
 
-        if (hudControlsToggleBtn) {
-            hudControlsToggleBtn.textContent = isHudControlsMinimized ? '+' : '-';
-            hudControlsToggleBtn.setAttribute('aria-expanded', String(!isHudControlsMinimized));
-            hudControlsToggleBtn.setAttribute(
+        if (leaderboardMinimizeBtn) {
+            leaderboardMinimizeBtn.textContent = isLeaderboardMinimized ? '+' : '-';
+            leaderboardMinimizeBtn.setAttribute('aria-expanded', String(!isLeaderboardMinimized));
+            leaderboardMinimizeBtn.setAttribute(
                 'aria-label',
-                isHudControlsMinimized ? 'Expandir comandos' : 'Minimizar comandos'
+                isLeaderboardMinimized ? 'Expandir recordes' : 'Minimizar recordes'
             );
+            leaderboardMinimizeBtn.title = isLeaderboardMinimized ? 'Expandir recordes' : 'Minimizar recordes';
         }
 
-        saveHudControlsMinimized(isHudControlsMinimized);
+        saveLeaderboardPanelMinimized(isLeaderboardMinimized);
+    }
+
+    function syncTopMenuToggles() {
+        if (commandsToggleBtn) {
+            commandsToggleBtn.classList.toggle('active', isCommandsOpen);
+            commandsToggleBtn.setAttribute('aria-expanded', String(isCommandsOpen));
+        }
+
+        if (profileToggleBtn) {
+            profileToggleBtn.classList.toggle('active', isProfileOpen);
+            profileToggleBtn.setAttribute('aria-expanded', String(isProfileOpen));
+        }
+    }
+
+    function pauseGameInputForOverlay() {
+        Object.keys(keys).forEach((key) => {
+            keys[key] = false;
+        });
+        clearTouchMovementKeys();
+        lastInputSignature = '__stale__';
+        flushMovementInput();
+
+        if (document.exitPointerLock) {
+            document.exitPointerLock();
+        }
     }
 
     function setMobileControlsVisibility() {
@@ -440,7 +470,7 @@
             button.addEventListener('pointerdown', (event) => {
                 event.preventDefault();
 
-                if (isChatOpen || isProfileOpen || stateSync.selfStatus === 'dead') {
+                if (isChatOpen || isProfileOpen || isCommandsOpen || stateSync.selfStatus === 'dead') {
                     return;
                 }
 
@@ -623,7 +653,7 @@
         ctx.closePath();
     }
 
-    function createCanvasSprite(width, height, scaleX, scaleY) {
+    function createCanvasSprite(width, height, scaleX, scaleY, maxCloseDistance = 14) {
         const spriteCanvas = document.createElement('canvas');
         spriteCanvas.width = width;
         spriteCanvas.height = height;
@@ -643,6 +673,9 @@
         sprite.userData.canvas = spriteCanvas;
         sprite.userData.ctx = spriteCanvas.getContext('2d');
         sprite.userData.texture = texture;
+        sprite.userData.baseScaleX = scaleX;
+        sprite.userData.baseScaleY = scaleY;
+        sprite.userData.maxCloseDistance = Math.max(0.001, Number(maxCloseDistance) || 14);
         return sprite;
     }
 
@@ -651,7 +684,8 @@
             options.width || 256,
             options.height || 64,
             options.scaleX || 3,
-            options.scaleY || 0.75
+            options.scaleY || 0.75,
+            options.maxCloseDistance || 14
         );
         updateLabelSprite(sprite, text, options);
         return sprite;
@@ -675,15 +709,15 @@
     }
 
     function createBubbleSprite() {
-        return createCanvasSprite(340, 124, 4.2, 1.5);
+        return createCanvasSprite(340, 124, 4.2, 1.5, 16);
     }
 
     function createVitalsSprite() {
-        return createCanvasSprite(360, 96, 4.5, 1.08);
+        return createCanvasSprite(360, 96, 4.5, 1.08, 15);
     }
 
     function createActionSprite() {
-        return createCanvasSprite(320, 72, 4.1, 0.95);
+        return createCanvasSprite(320, 72, 4.1, 0.95, 15);
     }
 
     function getVitalTone(level) {
@@ -795,11 +829,41 @@
                 : '';
 
         switch (action) {
+            case 'ride_elevator':
+                return {
+                    label: 'ELEVADOR',
+                    backgroundColor: 'rgba(120, 53, 15, 0.92)',
+                    textColor: '#fef3c7',
+                };
+            case 'attack_sword':
+                return {
+                    label: 'GOLPE DE ESPADA',
+                    backgroundColor: 'rgba(100, 116, 139, 0.94)',
+                    textColor: '#f8fafc',
+                };
+            case 'shoot_arrow':
+                return {
+                    label: 'ATIRANDO FLECHA',
+                    backgroundColor: 'rgba(120, 53, 15, 0.94)',
+                    textColor: '#fef3c7',
+                };
+            case 'drop_sword':
+                return {
+                    label: 'SOLTANDO ESPADA',
+                    backgroundColor: 'rgba(68, 64, 60, 0.92)',
+                    textColor: '#f8fafc',
+                };
             case 'kick_ball':
                 return {
                     label: 'CHUTANDO BOLA',
                     backgroundColor: 'rgba(37, 99, 235, 0.92)',
                     textColor: '#eff6ff',
+                };
+            case 'drop_bow':
+                return {
+                    label: 'SOLTANDO ARCO',
+                    backgroundColor: 'rgba(68, 64, 60, 0.92)',
+                    textColor: '#fef3c7',
                 };
             case 'drop_fruit':
                 return {
@@ -817,6 +881,18 @@
                 return {
                     label: 'PEGANDO MACA',
                     backgroundColor: 'rgba(194, 65, 12, 0.92)',
+                    textColor: '#fff7ed',
+                };
+            case 'pick_sword':
+                return {
+                    label: 'PEGANDO ESPADA',
+                    backgroundColor: 'rgba(71, 85, 105, 0.92)',
+                    textColor: '#f8fafc',
+                };
+            case 'pick_bow':
+                return {
+                    label: 'PEGANDO ARCO',
+                    backgroundColor: 'rgba(120, 53, 15, 0.92)',
                     textColor: '#fff7ed',
                 };
             case 'eat_fruit':
@@ -955,9 +1031,44 @@
         }
     }
 
-    function attachActorUi(actor, name, labelOptions) {
+    function updateSpriteScaleForCamera(sprite, distanceToCamera) {
+        if (!sprite) {
+            return;
+        }
+
+        const baseScaleX = Number(sprite.userData.baseScaleX) || sprite.scale.x || 1;
+        const baseScaleY = Number(sprite.userData.baseScaleY) || sprite.scale.y || 1;
+        const maxCloseDistance = Math.max(0.001, Number(sprite.userData.maxCloseDistance) || 14);
+        const scaleFactor = Math.min(1, Math.max(0.001, distanceToCamera) / maxCloseDistance);
+
+        sprite.scale.set(baseScaleX * scaleFactor, baseScaleY * scaleFactor, 1);
+    }
+
+    const actorUiWorldPosition = new THREE.Vector3();
+
+    function updateActorUiScale(renderState, actor) {
+        if (!renderState || !actor?.group) {
+            return;
+        }
+
+        actor.group.getWorldPosition(actorUiWorldPosition);
+        const distanceToCamera = camera.position.distanceTo(actorUiWorldPosition);
+
+        updateSpriteScaleForCamera(renderState.label, distanceToCamera);
+        updateSpriteScaleForCamera(renderState.vitals, distanceToCamera);
+        updateSpriteScaleForCamera(renderState.action, distanceToCamera);
+        updateSpriteScaleForCamera(renderState.speech, distanceToCamera);
+    }
+
+    function attachActorUi(actor, name, options = {}) {
+        const {
+            showLabel = true,
+            showVitals = true,
+            ...labelOptions
+        } = options;
         const label = createLabelSprite(name, labelOptions);
         label.position.y = 3.8;
+        label.visible = showLabel;
         actor.group.add(label);
 
         const vitals = createVitalsSprite();
@@ -973,19 +1084,38 @@
         actor.group.add(speech);
 
         const renderState = {
+            actor,
             label,
             vitals,
             action,
             speech,
+            showLabel,
+            showVitals,
             speechText: '',
             vitalsKey: '',
             actionKey: '',
+            equipmentKey: '',
+            modelActionName: '',
+            lastHitAt: '',
         };
         layoutActorUi(renderState);
         return renderState;
     }
 
+    function getActorEquipmentKey(actorState) {
+        const swordEquipped = Boolean(actorState?.equipment?.sword);
+        const bowEquipped = Boolean(actorState?.equipment?.bow);
+        return `${swordEquipped ? 1 : 0}:${bowEquipped ? 1 : 0}`;
+    }
+
     function updateActorVitals(renderState, actorState) {
+        if (!renderState.showVitals) {
+            renderState.vitals.visible = false;
+            renderState.vitalsKey = '';
+            layoutActorUi(renderState);
+            return;
+        }
+
         const nextVitalsKey = getVitalsIndicatorKey(actorState);
         if (nextVitalsKey === renderState.vitalsKey) {
             return;
@@ -1016,6 +1146,93 @@
         layoutActorUi(renderState);
     }
 
+    function updateActorModelState(renderState, actorState) {
+        if (!renderState?.actor) {
+            return;
+        }
+
+        if (actorState?.equipment && typeof renderState.actor.setEquipment === 'function') {
+            const nextEquipmentKey = getActorEquipmentKey(actorState);
+            if (nextEquipmentKey !== renderState.equipmentKey) {
+                renderState.equipmentKey = nextEquipmentKey;
+                renderState.actor.setEquipment(actorState.equipment);
+            }
+        }
+
+        const nextModelActionName = typeof actorState?.currentAction === 'string'
+            ? actorState.currentAction
+            : '';
+        const canCheckActionPlayback = typeof renderState.actor.isActionPlaying === 'function';
+        const isSwordAttackPlaying = canCheckActionPlayback
+            ? renderState.actor.isActionPlaying('attack_sword')
+            : false;
+        const shouldReplaySwordAttack = nextModelActionName === 'attack_sword'
+            && (
+                nextModelActionName !== renderState.modelActionName
+                || !isSwordAttackPlaying
+            );
+
+        if (nextModelActionName === renderState.modelActionName && !shouldReplaySwordAttack) {
+            return;
+        }
+
+        renderState.modelActionName = nextModelActionName;
+        if (shouldReplaySwordAttack && typeof renderState.actor.playAction === 'function') {
+            renderState.actor.playAction('attack_sword');
+        }
+    }
+
+    function updateActorHitFeedback(renderState, actorState) {
+        if (!renderState?.actor || typeof renderState.actor.triggerHitFlash !== 'function') {
+            return;
+        }
+
+        const nextLastHitAt = typeof actorState?.lastHitAt === 'string' ? actorState.lastHitAt : '';
+        if (!nextLastHitAt || nextLastHitAt === renderState.lastHitAt) {
+            return;
+        }
+
+        renderState.lastHitAt = nextLastHitAt;
+        renderState.actor.triggerHitFlash(Math.max(220, Number(actorState?.hitFlashRemainingMs) || 0));
+
+        if (actorState?.lastHitType === 'sword' && typeof renderState.actor.jump === 'function') {
+            renderState.actor.jump();
+        }
+    }
+
+    function getPredictedEquipmentAfterLocalAction(actionName) {
+        const currentEquipment = typeof localPlayer.getEquipmentState === 'function'
+            ? localPlayer.getEquipmentState()
+            : { sword: false, bow: false };
+
+        switch (actionName) {
+            case 'pick_sword':
+                return {
+                    ...currentEquipment,
+                    sword: true,
+                    bow: false,
+                };
+            case 'drop_sword':
+                return {
+                    ...currentEquipment,
+                    sword: false,
+                };
+            case 'pick_bow':
+                return {
+                    ...currentEquipment,
+                    bow: true,
+                    sword: false,
+                };
+            case 'drop_bow':
+                return {
+                    ...currentEquipment,
+                    bow: false,
+                };
+            default:
+                return currentEquipment;
+        }
+    }
+
     const world = new World(scene);
     const actionHud = new ActionHud();
     const actionSoundboard = new ActionSoundboard();
@@ -1035,6 +1252,9 @@
         height: 64,
         scaleX: 3,
         scaleY: 0.75,
+        maxCloseDistance: 15,
+        showLabel: false,
+        showVitals: false,
     });
 
     const aiPlayer = new Player(scene, 'Jardineiro IA', {
@@ -1050,6 +1270,7 @@
         height: 64,
         scaleX: 3.5,
         scaleY: 0.8,
+        maxCloseDistance: 15,
     });
 
     const remotePlayers = new Map();
@@ -1076,6 +1297,7 @@
 
     const keys = {};
     let isChatOpen = false;
+    let isCommandsOpen = false;
     let isProfileOpen = false;
     let actionCommandInFlight = false;
     let inputCommandInFlight = false;
@@ -1113,7 +1335,7 @@
     function computeMovementVector() {
         const isRunning = Boolean(keys.shift);
 
-        if (isChatOpen || isProfileOpen || stateSync.selfStatus === 'dead') {
+        if (isChatOpen || isProfileOpen || isCommandsOpen || stateSync.selfStatus === 'dead') {
             return { moveX: 0, moveZ: 0, isRunning: false };
         }
 
@@ -1393,6 +1615,10 @@
     }
 
     function activateChatInputMode() {
+        if (isCommandsOpen) {
+            closeCommandsPanel();
+        }
+
         if (isProfileOpen) {
             closeProfilePanel();
         }
@@ -1456,28 +1682,68 @@
         deactivateChatInputMode({ clearInput, blurInput: true });
     }
 
+    function openCommandsPanel() {
+        if (isChatOpen) {
+            closeChat(false);
+        }
+
+        if (isProfileOpen) {
+            closeProfilePanel();
+        }
+
+        isCommandsOpen = true;
+        pauseGameInputForOverlay();
+
+        if (commandsPanel) {
+            commandsPanel.hidden = false;
+        }
+
+        syncTopMenuToggles();
+    }
+
+    function closeCommandsPanel() {
+        isCommandsOpen = false;
+
+        if (commandsPanel) {
+            commandsPanel.hidden = true;
+        }
+
+        if (commandsCloseBtn && document.activeElement === commandsCloseBtn) {
+            commandsCloseBtn.blur();
+        }
+
+        syncTopMenuToggles();
+        lastInputSignature = '__stale__';
+        flushMovementInput();
+    }
+
+    function toggleCommandsPanel() {
+        if (isCommandsOpen) {
+            closeCommandsPanel();
+            return;
+        }
+
+        openCommandsPanel();
+    }
+
     function openProfilePanel() {
+        if (isCommandsOpen) {
+            closeCommandsPanel();
+        }
+
         if (isChatOpen) {
             closeChat(false);
         }
 
         isProfileOpen = true;
-        Object.keys(keys).forEach((key) => {
-            keys[key] = false;
-        });
-        clearTouchMovementKeys();
-        lastInputSignature = '__stale__';
-        flushMovementInput();
-
-        if (document.exitPointerLock) {
-            document.exitPointerLock();
-        }
+        pauseGameInputForOverlay();
 
         if (profilePanel) {
             profilePanel.hidden = false;
         }
 
         setProfileStatus('');
+        syncTopMenuToggles();
         if (profileNicknameInput) {
             profileNicknameInput.focus();
             profileNicknameInput.select();
@@ -1496,6 +1762,7 @@
         }
 
         setProfileStatus('');
+        syncTopMenuToggles();
         lastInputSignature = '__stale__';
         flushMovementInput();
     }
@@ -1532,6 +1799,28 @@
             if (!result?.action) {
                 return;
             }
+            if (result.position) {
+                localPlayer.setTransform(result.position, typeof result.rotationY === 'number' ? result.rotationY : localPlayer.group.rotation.y);
+                stateSync.selfTargetPosition.set(
+                    result.position.x || 0,
+                    result.position.y || 0,
+                    result.position.z || 0
+                );
+                if (typeof result.rotationY === 'number') {
+                    stateSync.selfTargetRotationY = result.rotationY;
+                }
+                stateSync.selfSnapshotReceivedAt = performance.now();
+                stateSync.selfInitialized = true;
+            }
+            updateActorModelState(localUi, {
+                currentAction: result.action,
+                equipment: result.action === 'attack_sword'
+                    ? {
+                        ...localPlayer.getEquipmentState(),
+                        sword: true,
+                    }
+                    : localPlayer.getEquipmentState(),
+            });
             updateActorAction(localUi, { currentAction: result.action, status: 'acting' });
             actionSoundboard.playAction(result.action);
         } catch (error) {
@@ -1559,6 +1848,10 @@
             if (!result?.action) {
                 return;
             }
+            updateActorModelState(localUi, {
+                currentAction: result.action,
+                equipment: getPredictedEquipmentAfterLocalAction(result.action),
+            });
             updateActorAction(localUi, { currentAction: result.action, status: 'acting' });
             actionSoundboard.playAction(result.action);
         } catch (error) {
@@ -1602,7 +1895,8 @@
     updateChatCounter();
     updateCollapsedChatBadge();
     setChatMinimized(isChatMinimized);
-    setHudControlsMinimized(isHudControlsMinimized);
+    setLeaderboardMinimized(isLeaderboardMinimized);
+    syncTopMenuToggles();
     setMobileControlsVisibility();
     bindMobileMovementControls();
 
@@ -1617,10 +1911,18 @@
         });
     }
 
-    if (hudControlsToggleBtn) {
-        hudControlsToggleBtn.addEventListener('click', () => {
-            setHudControlsMinimized(!isHudControlsMinimized);
+    if (leaderboardMinimizeBtn) {
+        leaderboardMinimizeBtn.addEventListener('click', () => {
+            setLeaderboardMinimized(!isLeaderboardMinimized);
         });
+    }
+
+    if (commandsToggleBtn) {
+        commandsToggleBtn.addEventListener('click', toggleCommandsPanel);
+    }
+
+    if (commandsCloseBtn) {
+        commandsCloseBtn.addEventListener('click', closeCommandsPanel);
     }
 
     if (profileColorInput) {
@@ -1678,6 +1980,14 @@
             return;
         }
 
+        if (isCommandsOpen) {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeCommandsPanel();
+            }
+            return;
+        }
+
         keys[key] = true;
 
         if (event.key === ' ') {
@@ -1712,7 +2022,7 @@
     });
 
     window.addEventListener('keyup', (event) => {
-        if (isChatOpen || isProfileOpen) {
+        if (isChatOpen || isProfileOpen || isCommandsOpen) {
             return;
         }
 
@@ -1730,7 +2040,7 @@
     });
 
     function requestPointerLock() {
-        if (isTouchDevice || isChatOpen || isProfileOpen || document.pointerLockElement === canvas) return;
+        if (isTouchDevice || isChatOpen || isProfileOpen || isCommandsOpen || document.pointerLockElement === canvas) return;
         canvas.requestPointerLock();
     }
 
@@ -1772,6 +2082,7 @@
             focusY + (Math.sin(cameraState.pitch) * cameraState.distance),
             playerPos.z + Math.cos(cameraState.yaw) * horizontalDistance
         );
+        targetCamPos.y = Math.max(targetCamPos.y, playerPos.y + CAMERA_MIN_RELATIVE_HEIGHT);
 
         playerFocus.set(playerPos.x, focusY, playerPos.z);
         scenicFocus.set(
@@ -1811,6 +2122,7 @@
             height: 64,
             scaleX: 3.2,
             scaleY: 0.76,
+            maxCloseDistance: 15,
         });
 
         return {
@@ -1915,9 +2227,11 @@
                 backgroundColor: 'rgba(0, 0, 0, 0.55)',
                 textColor: '#ffffff',
             });
+            updateActorModelState(localUi, snapshot.self);
             updateActorVitals(localUi, snapshot.self);
             updateActorAction(localUi, snapshot.self);
             updateActorSpeech(localUi, snapshot.self.speechVisible ? snapshot.self.speech : '');
+            updateActorHitFeedback(localUi, snapshot.self);
             actionHud.update(snapshot.self);
         }
 
@@ -1958,9 +2272,11 @@
                 backgroundColor: 'rgba(6, 78, 59, 0.88)',
                 textColor: '#dcfce7',
             });
+            updateActorModelState(aiUi, snapshot.ai);
             updateActorVitals(aiUi, snapshot.ai);
             updateActorAction(aiUi, snapshot.ai);
             updateActorSpeech(aiUi, snapshot.ai.speechVisible ? snapshot.ai.speech : '');
+            updateActorHitFeedback(aiUi, snapshot.ai);
         }
 
         if (snapshot.world && Array.isArray(snapshot.world.trees)) {
@@ -1969,6 +2285,10 @@
 
         if (snapshot.world) {
             world.syncDroppedApples(snapshot.world.droppedApples);
+            world.syncSwordPickups(snapshot.world.swords);
+            world.syncBowPickups(snapshot.world.bows);
+            world.syncArrowProjectiles(snapshot.world.arrows);
+            world.syncElevators(snapshot.world.elevators);
         }
 
         if (snapshot.world && Array.isArray(snapshot.world.graves)) {
@@ -2036,9 +2356,11 @@
                 backgroundColor: 'rgba(17, 24, 39, 0.84)',
                 textColor: '#f8fafc',
             });
+            updateActorModelState(remoteState, playerState);
             updateActorVitals(remoteState, playerState);
             updateActorAction(remoteState, playerState);
             updateActorSpeech(remoteState, playerState.speechVisible ? playerState.speech : '');
+            updateActorHitFeedback(remoteState, playerState);
         });
 
         Array.from(remotePlayers.keys()).forEach((playerId) => {
@@ -2126,7 +2448,7 @@
         const delta = Math.min(clock.getDelta(), 0.05);
         elapsedTime += delta;
         const localInput = computeMovementVector();
-        const localMovementKeys = (isChatOpen || isProfileOpen || stateSync.selfStatus === 'dead') ? {} : keys;
+        const localMovementKeys = (isChatOpen || isProfileOpen || isCommandsOpen || stateSync.selfStatus === 'dead') ? {} : keys;
         localPlayer.speed = getMovementSpeedForInput(localInput);
 
         localPlayer.update(delta, localMovementKeys, cameraState.yaw, {
@@ -2159,9 +2481,20 @@
             remoteState.player.updateRemote(delta, remoteState.targetPosition, remoteState.targetRotationY);
         });
 
+        localPlayer.refreshVisualEffects();
+        aiPlayer.refreshVisualEffects();
+        remotePlayers.forEach((remoteState) => {
+            remoteState.player.refreshVisualEffects();
+        });
+
         syncSoccerBallCarrierVisual();
         world.update(elapsedTime);
         updateCamera(delta);
+        updateActorUiScale(localUi, localPlayer);
+        updateActorUiScale(aiUi, aiPlayer);
+        remotePlayers.forEach((remoteState) => {
+            updateActorUiScale(remoteState, remoteState.player);
+        });
 
         renderer.render(scene, camera);
     }

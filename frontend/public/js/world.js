@@ -1,11 +1,11 @@
 const HOUSE_LAYOUT = Object.freeze({
-    position: Object.freeze({ x: 0, y: 0, z: 20 }),
-    width: 8.5,
-    depth: 7,
-    wallHeight: 5.2,
-    wallThickness: 0.35,
-    doorWidth: 2.4,
-    doorHeight: 3.6,
+    position: Object.freeze({ x: 0, y: 0, z: 23 }),
+    width: 24,
+    depth: 18,
+    wallHeight: 8.2,
+    wallThickness: 0.55,
+    doorWidth: 3.4,
+    doorHeight: 4.8,
 });
 
 const DEFAULT_SOCCER_FIELD_LAYOUT = Object.freeze({
@@ -21,14 +21,14 @@ const DEFAULT_SOCCER_FIELD_LAYOUT = Object.freeze({
 });
 
 const TREE_POSITIONS = Object.freeze([
-    Object.freeze({ x: -24, z: -8 }),
-    Object.freeze({ x: -16, z: 8 }),
-    Object.freeze({ x: 16, z: 9 }),
-    Object.freeze({ x: 26, z: -6 }),
-    Object.freeze({ x: -26, z: 18 }),
-    Object.freeze({ x: 20, z: 20 }),
-    Object.freeze({ x: -18, z: 30 }),
-    Object.freeze({ x: 28, z: 8 }),
+    Object.freeze({ x: -33, z: -8 }),
+    Object.freeze({ x: -29, z: 10 }),
+    Object.freeze({ x: 29, z: 8 }),
+    Object.freeze({ x: 34, z: -6 }),
+    Object.freeze({ x: -34, z: 24 }),
+    Object.freeze({ x: 30, z: 31 }),
+    Object.freeze({ x: -22, z: 36 }),
+    Object.freeze({ x: 22, z: 38 }),
 ]);
 
 const DEFAULT_SOCCER_GRANDSTAND_LAYOUT = Object.freeze({
@@ -54,48 +54,288 @@ function clonePoint(point) {
     };
 }
 
-function buildHouseWallCollisionBoxes(layout = HOUSE_LAYOUT) {
+function buildHouseFootprint(layout = HOUSE_LAYOUT, padding = 0) {
     const halfWidth = layout.width / 2;
     const halfDepth = layout.depth / 2;
-    const halfDoorWidth = layout.doorWidth / 2;
+
+    return {
+        minX: layout.position.x - halfWidth - padding,
+        maxX: layout.position.x + halfWidth + padding,
+        minZ: layout.position.z - halfDepth - padding,
+        maxZ: layout.position.z + halfDepth + padding,
+    };
+}
+
+function buildHouseInteriorMetrics(layout = HOUSE_LAYOUT) {
+    const halfWidth = layout.width / 2;
+    const halfDepth = layout.depth / 2;
     const wallThickness = layout.wallThickness;
+    const hallHalfWidth = Math.min(layout.width * 0.16, 4.1);
+    const dividerHalfThickness = wallThickness / 2;
+    const dividerLeftX = layout.position.x - hallHalfWidth - dividerHalfThickness;
+    const dividerRightX = layout.position.x + hallHalfWidth + dividerHalfThickness;
     const southEdge = layout.position.z - halfDepth;
     const northEdge = layout.position.z + halfDepth;
     const westEdge = layout.position.x - halfWidth;
     const eastEdge = layout.position.x + halfWidth;
+    const leftWingDoorCenterX = (westEdge + dividerLeftX) / 2;
+    const rightWingDoorCenterX = (eastEdge + dividerRightX) / 2;
+
+    return {
+        southEdge,
+        northEdge,
+        westEdge,
+        eastEdge,
+        dividerLeftX,
+        dividerRightX,
+        dividerDoorWidth: 2.2,
+        dividerDoorCenters: [
+            southEdge + 2.8,
+            layout.position.z + 0.15,
+            northEdge - 3.6,
+        ],
+        wingPartitionZs: [
+            layout.position.z - 1.9,
+            layout.position.z + 3.2,
+        ],
+        wingDoorWidth: 1.9,
+        leftWingDoorCenterX,
+        rightWingDoorCenterX,
+        throneWallZ: northEdge - 2.7,
+        throneDoorWidth: 4.8,
+    };
+}
+
+function buildHouseTowerElevators(layout = HOUSE_LAYOUT) {
+    const halfWidth = layout.width / 2;
+    const halfDepth = layout.depth / 2;
+    const southEdge = layout.position.z - halfDepth;
+    const towerInsetX = 3.0;
+    const towerInsetZ = 3.05;
+    const towerRadius = 2.7;
+    const topPlatformY = layout.wallHeight + 3.6;
+    const topPlatformHalfSize = 1.9;
+    const doorwayOffset = towerRadius - 0.18;
+    const callButtonOffset = towerRadius + 0.72;
 
     return [
         {
-            minX: westEdge,
-            maxX: eastEdge,
-            minZ: northEdge - wallThickness,
-            maxZ: northEdge,
+            id: 'tower-west',
+            x: layout.position.x - halfWidth + towerInsetX,
+            z: southEdge + towerInsetZ,
+            towerRadius,
+            bottomY: 0,
+            topY: topPlatformY,
+            innerSideX: 1,
+            innerDoor: {
+                x: (layout.position.x - halfWidth + towerInsetX) + doorwayOffset,
+                y: 1.8,
+                z: southEdge + towerInsetZ,
+                width: 1.5,
+                height: 3.6,
+                depth: 0.22,
+                rotationY: Math.PI / 2,
+            },
+            callButton: {
+                x: (layout.position.x - halfWidth + towerInsetX) + callButtonOffset,
+                y: 0.78,
+                z: southEdge + towerInsetZ + 0.16,
+            },
+            topSurface: {
+                minX: (layout.position.x - halfWidth + towerInsetX) - topPlatformHalfSize,
+                maxX: (layout.position.x - halfWidth + towerInsetX) + topPlatformHalfSize,
+                minZ: (southEdge + towerInsetZ) - topPlatformHalfSize,
+                maxZ: (southEdge + towerInsetZ) + topPlatformHalfSize,
+                height: topPlatformY,
+            },
         },
         {
-            minX: westEdge,
-            maxX: westEdge + wallThickness,
-            minZ: southEdge,
-            maxZ: northEdge,
-        },
-        {
-            minX: eastEdge - wallThickness,
-            maxX: eastEdge,
-            minZ: southEdge,
-            maxZ: northEdge,
-        },
-        {
-            minX: westEdge,
-            maxX: layout.position.x - halfDoorWidth,
-            minZ: southEdge,
-            maxZ: southEdge + wallThickness,
-        },
-        {
-            minX: layout.position.x + halfDoorWidth,
-            maxX: eastEdge,
-            minZ: southEdge,
-            maxZ: southEdge + wallThickness,
+            id: 'tower-east',
+            x: layout.position.x + halfWidth - towerInsetX,
+            z: southEdge + towerInsetZ,
+            towerRadius,
+            bottomY: 0,
+            topY: topPlatformY,
+            innerSideX: -1,
+            innerDoor: {
+                x: (layout.position.x + halfWidth - towerInsetX) - doorwayOffset,
+                y: 1.8,
+                z: southEdge + towerInsetZ,
+                width: 1.5,
+                height: 3.6,
+                depth: 0.22,
+                rotationY: Math.PI / 2,
+            },
+            callButton: {
+                x: (layout.position.x + halfWidth - towerInsetX) - callButtonOffset,
+                y: 0.78,
+                z: southEdge + towerInsetZ + 0.16,
+            },
+            topSurface: {
+                minX: (layout.position.x + halfWidth - towerInsetX) - topPlatformHalfSize,
+                maxX: (layout.position.x + halfWidth - towerInsetX) + topPlatformHalfSize,
+                minZ: (southEdge + towerInsetZ) - topPlatformHalfSize,
+                maxZ: (southEdge + towerInsetZ) + topPlatformHalfSize,
+                height: topPlatformY,
+            },
         },
     ];
+}
+
+function buildHouseTowerStepSurfaces(layout = HOUSE_LAYOUT) {
+    return buildHouseTowerElevators(layout).map((elevator) => ({
+        ...elevator.topSurface,
+    }));
+}
+
+function buildHouseFloorStepSurfaces(layout = HOUSE_LAYOUT) {
+    const metrics = buildHouseInteriorMetrics(layout);
+
+    return [
+        {
+            minX: metrics.westEdge + 0.4,
+            maxX: metrics.eastEdge - 0.4,
+            minZ: metrics.southEdge + 0.4,
+            maxZ: metrics.northEdge - 0.4,
+            height: 0.15,
+        },
+    ];
+}
+
+function buildHouseRoyalStepSurfaces(layout = HOUSE_LAYOUT) {
+    const metrics = buildHouseInteriorMetrics(layout);
+    const throneZ = metrics.northEdge - 4.2;
+    const leftTableX = layout.position.x - 5.8;
+    const rightTableX = layout.position.x + 5.8;
+
+    return [
+        {
+            minX: layout.position.x - 6.8,
+            maxX: layout.position.x + 6.8,
+            minZ: throneZ - 3.25,
+            maxZ: throneZ - 1.75,
+            height: 0.34,
+        },
+        {
+            minX: layout.position.x - 5.1,
+            maxX: layout.position.x + 5.1,
+            minZ: throneZ - 1.95,
+            maxZ: throneZ + 1.7,
+            height: 0.72,
+        },
+        {
+            minX: layout.position.x - 1.38,
+            maxX: layout.position.x + 1.38,
+            minZ: throneZ + 0.3,
+            maxZ: throneZ + 1.58,
+            height: 1.22,
+        },
+        {
+            minX: layout.position.x - 6.9,
+            maxX: layout.position.x - 5.15,
+            minZ: throneZ - 0.1,
+            maxZ: throneZ + 1.28,
+            height: 0.82,
+        },
+        {
+            minX: layout.position.x + 5.15,
+            maxX: layout.position.x + 6.9,
+            minZ: throneZ - 0.1,
+            maxZ: throneZ + 1.28,
+            height: 0.82,
+        },
+        {
+            minX: leftTableX - 1.05,
+            maxX: leftTableX + 1.05,
+            minZ: layout.position.z - 3.6,
+            maxZ: layout.position.z + 3.6,
+            height: 1.05,
+        },
+        {
+            minX: rightTableX - 1.05,
+            maxX: rightTableX + 1.05,
+            minZ: layout.position.z - 3.6,
+            maxZ: layout.position.z + 3.6,
+            height: 1.05,
+        },
+        {
+            minX: layout.position.x - 8.7,
+            maxX: layout.position.x - 7.35,
+            minZ: throneZ - 0.35,
+            maxZ: throneZ + 0.95,
+            height: 0.56,
+        },
+        {
+            minX: layout.position.x + 7.35,
+            maxX: layout.position.x + 8.7,
+            minZ: throneZ - 0.35,
+            maxZ: throneZ + 0.95,
+            height: 0.56,
+        },
+        {
+            minX: layout.position.x - 1.25,
+            maxX: layout.position.x + 1.25,
+            minZ: layout.position.z - 3.45,
+            maxZ: layout.position.z - 1.95,
+            height: 0.92,
+        },
+    ];
+}
+
+function buildHouseStepSurfaces(layout = HOUSE_LAYOUT) {
+    return [
+        ...buildHouseFloorStepSurfaces(layout),
+        ...buildHouseRoyalStepSurfaces(layout),
+        ...buildHouseTowerStepSurfaces(layout),
+    ];
+}
+
+function buildWallSpans(rangeStart, rangeEnd, gaps = []) {
+    const spans = [];
+    const normalizedGaps = gaps
+        .map((gap) => ({
+            start: Math.max(rangeStart, Number(gap?.center) - ((Number(gap?.width) || 0) / 2)),
+            end: Math.min(rangeEnd, Number(gap?.center) + ((Number(gap?.width) || 0) / 2)),
+        }))
+        .filter((gap) => gap.end > gap.start)
+        .sort((left, right) => left.start - right.start);
+
+    let cursor = rangeStart;
+    normalizedGaps.forEach((gap) => {
+        if (gap.start > cursor) {
+            spans.push([cursor, gap.start]);
+        }
+        cursor = Math.max(cursor, gap.end);
+    });
+
+    if (rangeEnd > cursor) {
+        spans.push([cursor, rangeEnd]);
+    }
+
+    return spans;
+}
+
+function addCollisionRect(rects, minX, maxX, minZ, maxZ) {
+    if ((maxX - minX) < 0.01 || (maxZ - minZ) < 0.01) {
+        return;
+    }
+
+    rects.push({ minX, maxX, minZ, maxZ });
+}
+
+function buildHouseWallCollisionBoxes(layout = HOUSE_LAYOUT) {
+    const halfDoorWidth = layout.doorWidth / 2;
+    const wallThickness = layout.wallThickness;
+    const metrics = buildHouseInteriorMetrics(layout);
+    const rects = [];
+
+    addCollisionRect(rects, metrics.westEdge, metrics.eastEdge, metrics.northEdge - wallThickness, metrics.northEdge);
+    addCollisionRect(rects, metrics.westEdge, metrics.westEdge + wallThickness, metrics.southEdge, metrics.northEdge);
+    addCollisionRect(rects, metrics.eastEdge - wallThickness, metrics.eastEdge, metrics.southEdge, metrics.northEdge);
+    addCollisionRect(rects, metrics.westEdge, layout.position.x - halfDoorWidth, metrics.southEdge, metrics.southEdge + wallThickness);
+    addCollisionRect(rects, layout.position.x + halfDoorWidth, metrics.eastEdge, metrics.southEdge, metrics.southEdge + wallThickness);
+
+    return rects;
 }
 
 function isPointInsideRect(point, rect, padding = 0) {
@@ -163,22 +403,22 @@ function buildSoccerGrandstandCollisionBoxes(fieldState = DEFAULT_SOCCER_FIELD_L
 
     return [
         {
-            minX: Math.min(layout.backX, layout.backX + (layout.sideMultiplier * backWallThickness)),
-            maxX: Math.max(layout.backX, layout.backX + (layout.sideMultiplier * backWallThickness)),
+            minX: Math.min(layout.backX + (layout.sideMultiplier * backWallThickness), layout.frontX + (layout.sideMultiplier * (layout.tiers * layout.tierDepth)) - (layout.sideMultiplier * 0.1)),
+            maxX: Math.max(layout.backX + (layout.sideMultiplier * backWallThickness), layout.frontX + (layout.sideMultiplier * (layout.tiers * layout.tierDepth)) - (layout.sideMultiplier * 0.1)),
             minZ: layout.minZ - 0.08,
             maxZ: layout.maxZ + 0.08,
         },
         {
             minX: layout.minX - 0.08,
             maxX: layout.maxX + 0.08,
-            minZ: layout.minZ - endWallThickness,
-            maxZ: layout.minZ,
+            minZ: layout.minZ - 0.08,
+            maxZ: layout.minZ + 0.18,
         },
         {
             minX: layout.minX - 0.08,
             maxX: layout.maxX + 0.08,
-            minZ: layout.maxZ,
-            maxZ: layout.maxZ + endWallThickness,
+            minZ: layout.maxZ - 0.18,
+            maxZ: layout.maxZ + 0.08,
         },
     ];
 }
@@ -209,6 +449,9 @@ class World {
         this.apples = [];
         this.applesByTree = new Map();
         this.looseApples = new Map();
+        this.looseSwords = new Map();
+        this.looseBows = new Map();
+        this.arrowProjectiles = new Map();
         this.graves = new Map();
         this.soccerFieldGroup = null;
         this.soccerBall = null;
@@ -235,6 +478,8 @@ class World {
         this.bounds = 45;
         this.houseLayout = HOUSE_LAYOUT;
         this.houseWallCollisionBoxes = buildHouseWallCollisionBoxes(this.houseLayout);
+        this.houseTowerElevators = buildHouseTowerElevators(this.houseLayout);
+        this.houseStepSurfaces = buildHouseStepSurfaces(this.houseLayout);
         this.soccerGrandstandCollisionBoxes = buildSoccerGrandstandCollisionBoxes();
         this.soccerGrandstandStepSurfaces = buildSoccerGrandstandStepSurfaces();
 
@@ -893,11 +1138,11 @@ class World {
         vertices.needsUpdate = true;
         groundGeo.computeVertexNormals();
 
-        const pathGeo = new THREE.PlaneGeometry(2, 18);
-        const pathMat = new THREE.MeshLambertMaterial({ color: 0xc4a56e });
+        const pathGeo = new THREE.PlaneGeometry(3.8, 24);
+        const pathMat = new THREE.MeshLambertMaterial({ color: 0xb99a65 });
         const path = new THREE.Mesh(pathGeo, pathMat);
         path.rotation.x = -Math.PI / 2;
-        path.position.set(0, 0.02, 8);
+        path.position.set(0, 0.02, 10.4);
         path.receiveShadow = true;
         this.scene.add(path);
     }
@@ -992,277 +1237,542 @@ class World {
 
     _createHouse() {
         const houseGroup = new THREE.Group();
-        const {
-            width,
-            depth,
-            wallHeight,
-            wallThickness,
-            doorWidth,
-            doorHeight,
-            position,
-        } = this.houseLayout;
+        const { width, depth, wallHeight, wallThickness, doorWidth, doorHeight, position } = this.houseLayout;
+        const localLayout = {
+            ...this.houseLayout,
+            position: { x: 0, y: 0, z: 0 },
+        };
+        const metrics = buildHouseInteriorMetrics(localLayout);
+        const collisionRects = buildHouseWallCollisionBoxes(localLayout);
         const halfWidth = width / 2;
         const halfDepth = depth / 2;
-        const sideWallZ = 0;
-        const frontWallZ = -halfDepth + (wallThickness / 2);
-        const backWallZ = halfDepth - (wallThickness / 2);
-        const sideWallX = halfWidth - (wallThickness / 2);
-        const frontWallSegmentWidth = (width - doorWidth) / 2;
-        const roofRadius = Math.max(width, depth) * 0.83;
-        const roofHeight = 3.2;
-        const frontWindowOffsetX = halfWidth - 1.45;
-        const sideWindowOffsetZ = 0.9;
+        const gateZ = metrics.southEdge + (wallThickness / 2);
 
-        const wallMat = new THREE.MeshLambertMaterial({ color: 0xe8d5b7 });
-        const trimMat = new THREE.MeshLambertMaterial({ color: 0x7a5134 });
-        const roofMat = new THREE.MeshLambertMaterial({ color: 0xb04030 });
-        const doorMat = new THREE.MeshLambertMaterial({ color: 0x6b4423 });
-        const windowMat = new THREE.MeshLambertMaterial({ color: 0x9ed8ff, transparent: true, opacity: 0.72 });
-        const floorMat = new THREE.MeshLambertMaterial({ color: 0xb69062 });
-        const rugMat = new THREE.MeshLambertMaterial({ color: 0xa3402d });
-        const bedFrameMat = new THREE.MeshLambertMaterial({ color: 0x6f4e37 });
-        const fabricMat = new THREE.MeshLambertMaterial({ color: 0xf1efe7 });
-        const blanketMat = new THREE.MeshLambertMaterial({ color: 0x4f7f6a });
-        const furnitureMat = new THREE.MeshLambertMaterial({ color: 0x8b6b4a });
-        const shelfMat = new THREE.MeshLambertMaterial({ color: 0x75523b });
-        const leafMat = new THREE.MeshLambertMaterial({ color: 0x2f7d41 });
-        const potMat = new THREE.MeshLambertMaterial({ color: 0xa86442 });
+        const stoneMat = new THREE.MeshLambertMaterial({ color: 0x98a2ae });
+        const darkStoneMat = new THREE.MeshLambertMaterial({ color: 0x6b7280 });
+        const floorMat = new THREE.MeshLambertMaterial({ color: 0x737983 });
+        const floorAltMat = new THREE.MeshLambertMaterial({ color: 0x8b919c });
+        const woodMat = new THREE.MeshLambertMaterial({ color: 0x6b4b32 });
+        const woodDarkMat = new THREE.MeshLambertMaterial({ color: 0x4b3423 });
+        const ironMat = new THREE.MeshLambertMaterial({ color: 0x2d3748 });
+        const bannerBlueMat = new THREE.MeshLambertMaterial({ color: 0x1d4ed8 });
+        const bannerRedMat = new THREE.MeshLambertMaterial({ color: 0x991b1b });
+        const carpetMat = new THREE.MeshLambertMaterial({ color: 0x7f1d1d });
+        const candleMat = new THREE.MeshLambertMaterial({ color: 0xfef3c7, emissive: 0xf59e0b, emissiveIntensity: 0.2 });
+        const parchmentMat = new THREE.MeshLambertMaterial({ color: 0xe7dcc0 });
+        const goldMat = new THREE.MeshLambertMaterial({ color: 0xc69214 });
+        const barrelMat = new THREE.MeshLambertMaterial({ color: 0x8b6b4a });
+        const glassMat = new THREE.MeshLambertMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.75 });
+        const fabricMat = new THREE.MeshLambertMaterial({ color: 0x586b8c });
+        const clothMat = new THREE.MeshLambertMaterial({ color: 0xd8ccb2 });
+        const royalVelvetMat = new THREE.MeshLambertMaterial({ color: 0x5f1223 });
+        const rubyMat = new THREE.MeshLambertMaterial({ color: 0xbe123c, emissive: 0x4c0519, emissiveIntensity: 0.12 });
+        const emeraldMat = new THREE.MeshLambertMaterial({ color: 0x059669, emissive: 0x022c22, emissiveIntensity: 0.12 });
 
         const createMesh = (geometry, material, positionVector, options = {}) => {
             const mesh = new THREE.Mesh(geometry, material);
             mesh.position.set(positionVector.x, positionVector.y, positionVector.z);
             mesh.castShadow = options.castShadow !== false;
             mesh.receiveShadow = options.receiveShadow !== false;
-            if (options.rotationY) mesh.rotation.y = options.rotationY;
-            if (options.rotationX) mesh.rotation.x = options.rotationX;
-            if (options.rotationZ) mesh.rotation.z = options.rotationZ;
+            if (typeof options.rotationX === 'number') mesh.rotation.x = options.rotationX;
+            if (typeof options.rotationY === 'number') mesh.rotation.y = options.rotationY;
+            if (typeof options.rotationZ === 'number') mesh.rotation.z = options.rotationZ;
             houseGroup.add(mesh);
             return mesh;
         };
 
-        createMesh(
-            new THREE.BoxGeometry(width, wallHeight, wallThickness),
-            wallMat,
-            { x: 0, y: wallHeight / 2, z: backWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(wallThickness, wallHeight, depth),
-            wallMat,
-            { x: -sideWallX, y: wallHeight / 2, z: sideWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(wallThickness, wallHeight, depth),
-            wallMat,
-            { x: sideWallX, y: wallHeight / 2, z: sideWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(frontWallSegmentWidth, wallHeight, wallThickness),
-            wallMat,
-            { x: -((doorWidth / 2) + (frontWallSegmentWidth / 2)), y: wallHeight / 2, z: frontWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(frontWallSegmentWidth, wallHeight, wallThickness),
-            wallMat,
-            { x: (doorWidth / 2) + (frontWallSegmentWidth / 2), y: wallHeight / 2, z: frontWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(doorWidth, wallHeight - doorHeight, wallThickness),
-            wallMat,
-            { x: 0, y: doorHeight + ((wallHeight - doorHeight) / 2), z: frontWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(width - (wallThickness * 2), 0.14, depth - (wallThickness * 2)),
-            floorMat,
-            { x: 0, y: 0.07, z: 0 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(2.6, 0.03, 1.7),
-            rugMat,
-            { x: 0.6, y: 0.09, z: -0.25 },
-            { castShadow: false }
-        );
-
-        const roof = createMesh(
-            new THREE.ConeGeometry(roofRadius, roofHeight, 4),
-            roofMat,
-            { x: 0, y: wallHeight + (roofHeight / 2) - 0.05, z: 0 },
-            { receiveShadow: false }
-        );
-        roof.rotation.y = Math.PI / 4;
-
-        const frameThickness = 0.14;
-        createMesh(
-            new THREE.BoxGeometry(frameThickness, doorHeight, 0.16),
-            trimMat,
-            { x: -(doorWidth / 2) - (frameThickness / 2), y: doorHeight / 2, z: frontWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(frameThickness, doorHeight, 0.16),
-            trimMat,
-            { x: (doorWidth / 2) + (frameThickness / 2), y: doorHeight / 2, z: frontWallZ }
-        );
-        createMesh(
-            new THREE.BoxGeometry(doorWidth + (frameThickness * 2), frameThickness, 0.16),
-            trimMat,
-            { x: 0, y: doorHeight + (frameThickness / 2), z: frontWallZ }
-        );
-
-        const doorPivot = new THREE.Group();
-        doorPivot.position.set(-(doorWidth / 2) + 0.06, 0, frontWallZ - 0.03);
-        doorPivot.rotation.y = -1.2;
-        const door = new THREE.Mesh(
-            new THREE.BoxGeometry(doorWidth - 0.16, doorHeight, 0.09),
-            doorMat
-        );
-        door.position.set((doorWidth - 0.16) / 2, doorHeight / 2, 0);
-        door.castShadow = true;
-        door.receiveShadow = true;
-        doorPivot.add(door);
-        houseGroup.add(doorPivot);
-
-        const createWindow = (x, y, z, rotationY = 0) => {
-            const window = createMesh(
-                new THREE.BoxGeometry(0.9, 0.9, 0.08),
-                windowMat,
-                { x, y, z },
-                { rotationY }
-            );
-
-            const frameHorizontal = createMesh(
-                new THREE.BoxGeometry(0.98, 0.06, 0.12),
-                trimMat,
-                { x, y, z },
-                { rotationY }
-            );
-            const frameVertical = createMesh(
-                new THREE.BoxGeometry(0.06, 0.98, 0.12),
-                trimMat,
-                { x, y, z },
-                { rotationY }
-            );
-
-            window.castShadow = false;
-            frameHorizontal.castShadow = false;
-            frameVertical.castShadow = false;
+        const createBox = (sizeX, sizeY, sizeZ, material, x, y, z, options = {}) => {
+            return createMesh(new THREE.BoxGeometry(sizeX, sizeY, sizeZ), material, { x, y, z }, options);
         };
 
-        createWindow(-frontWindowOffsetX, 3.15, frontWallZ + 0.03);
-        createWindow(frontWindowOffsetX, 3.15, frontWallZ + 0.03);
-        createWindow(-sideWallX + 0.03, 3.05, -sideWindowOffsetZ, Math.PI / 2);
-        createWindow(sideWallX - 0.03, 3.05, sideWindowOffsetZ, Math.PI / 2);
+        const createCylinder = (radiusTop, radiusBottom, height, radialSegments, material, x, y, z, options = {}) => {
+            return createMesh(
+                new THREE.CylinderGeometry(radiusTop, radiusBottom, height, radialSegments),
+                material,
+                { x, y, z },
+                options
+            );
+        };
 
-        const chimney = createMesh(
-            new THREE.BoxGeometry(0.8, 2, 0.8),
-            new THREE.MeshLambertMaterial({ color: 0x8b6555 }),
-            { x: 2.7, y: wallHeight + 1.45, z: 1.35 }
-        );
-        chimney.castShadow = true;
+        const createCone = (radius, height, radialSegments, material, x, y, z, options = {}) => {
+            return createMesh(
+                new THREE.ConeGeometry(radius, height, radialSegments),
+                material,
+                { x, y, z },
+                options
+            );
+        };
 
-        createMesh(
-            new THREE.BoxGeometry(1.8, 0.35, 2.25),
-            bedFrameMat,
-            { x: -2.3, y: 0.22, z: 1.15 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.58, 0.22, 2.0),
-            fabricMat,
-            { x: -2.3, y: 0.48, z: 1.15 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.52, 0.16, 1.2),
-            blanketMat,
-            { x: -2.3, y: 0.62, z: 1.4 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.8, 0.75, 0.12),
-            bedFrameMat,
-            { x: -2.3, y: 0.55, z: 2.2 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(0.62, 0.12, 0.38),
-            new THREE.MeshLambertMaterial({ color: 0xf8f7f2 }),
-            { x: -2.3, y: 0.65, z: 1.95 }
-        );
+        const createBanner = (x, y, z, material, rotationY = 0, widthSize = 1.4, heightSize = 3.2) => {
+            createBox(0.12, heightSize + 0.35, 0.12, woodDarkMat, x, y + 0.1, z);
+            createBox(widthSize, heightSize, 0.08, material, x, y - 0.15, z, { rotationY, castShadow: false });
+            createBox(widthSize + 0.15, 0.12, 0.12, goldMat, x, y + (heightSize / 2) + 0.2, z, { rotationY });
+        };
 
-        createMesh(
-            new THREE.BoxGeometry(1.25, 0.12, 0.82),
-            furnitureMat,
-            { x: 1.85, y: 1.02, z: -0.8 }
-        );
-        [
-            { x: 1.38, z: -1.12 },
-            { x: 2.32, z: -1.12 },
-            { x: 1.38, z: -0.48 },
-            { x: 2.32, z: -0.48 },
-        ].forEach((legPos) => {
-            createMesh(
-                new THREE.BoxGeometry(0.09, 0.82, 0.09),
-                furnitureMat,
-                { x: legPos.x, y: 0.55, z: legPos.z }
+        const createTorch = (x, y, z, rotationY = 0) => {
+            const bracket = createBox(0.14, 0.18, 0.34, ironMat, x, y, z, { rotationY });
+            bracket.castShadow = false;
+            const flame = createMesh(
+                new THREE.SphereGeometry(0.16, 8, 8),
+                candleMat,
+                { x, y: y + 0.2, z },
+                { castShadow: false, receiveShadow: false }
+            );
+            flame.scale.set(0.9, 1.35, 0.9);
+        };
+
+        const createShelf = (x, z, rotationY = 0) => {
+            createBox(2.2, 1.8, 0.55, woodDarkMat, x, 0.92, z, { rotationY });
+            createBox(2.0, 0.1, 0.48, woodMat, x, 0.55, z, { rotationY });
+            createBox(2.0, 0.1, 0.48, woodMat, x, 1.0, z, { rotationY });
+            createBox(2.0, 0.1, 0.48, woodMat, x, 1.45, z, { rotationY });
+            createBox(0.25, 0.36, 0.18, bannerBlueMat, x - 0.55, 1.17, z - 0.03, { rotationY, castShadow: false });
+            createBox(0.32, 0.42, 0.18, bannerRedMat, x, 1.2, z + 0.05, { rotationY, castShadow: false });
+            createBox(0.3, 0.22, 0.18, parchmentMat, x + 0.56, 1.52, z - 0.04, { rotationY, castShadow: false });
+        };
+
+        const createBarrel = (x, z, scale = 1) => {
+            createCylinder(0.36 * scale, 0.42 * scale, 0.9 * scale, 10, barrelMat, x, 0.45 * scale, z);
+            createBox(0.85 * scale, 0.06 * scale, 0.85 * scale, ironMat, x, 0.22 * scale, z);
+            createBox(0.85 * scale, 0.06 * scale, 0.85 * scale, ironMat, x, 0.68 * scale, z);
+        };
+
+        const createTableSet = (x, z, widthSize, depthSize, rotationY = 0) => {
+            createBox(widthSize, 0.16, depthSize, woodMat, x, 1.05, z, { rotationY });
+            [
+                [-0.42, -0.32],
+                [0.42, -0.32],
+                [-0.42, 0.32],
+                [0.42, 0.32],
+            ].forEach(([offsetX, offsetZ]) => {
+                const nextX = x + ((rotationY === Math.PI / 2) ? offsetZ * widthSize : offsetX * widthSize);
+                const nextZ = z + ((rotationY === Math.PI / 2) ? offsetX * depthSize : offsetZ * depthSize);
+                createBox(0.12, 0.86, 0.12, woodDarkMat, nextX, 0.55, nextZ);
+            });
+        };
+
+        const createBench = (x, z, widthSize, rotationY = 0) => {
+            createBox(widthSize, 0.12, 0.38, woodDarkMat, x, 0.54, z, { rotationY });
+            if (rotationY === Math.PI / 2) {
+                createBox(0.1, 0.42, 0.1, woodDarkMat, x, 0.27, z - ((widthSize / 2) - 0.18));
+                createBox(0.1, 0.42, 0.1, woodDarkMat, x, 0.27, z + ((widthSize / 2) - 0.18));
+                return;
+            }
+
+            createBox(0.1, 0.42, 0.1, woodDarkMat, x - ((widthSize / 2) - 0.18), 0.27, z);
+            createBox(0.1, 0.42, 0.1, woodDarkMat, x + ((widthSize / 2) - 0.18), 0.27, z);
+        };
+
+        const createBed = (x, z, blanketColor, rotationY = 0) => {
+            const blanketMat = new THREE.MeshLambertMaterial({ color: blanketColor });
+            createBox(2.3, 0.3, 1.4, woodDarkMat, x, 0.18, z, { rotationY });
+            createBox(2.02, 0.22, 1.16, clothMat, x, 0.42, z, { rotationY });
+            createBox(1.98, 0.18, 0.74, blanketMat, x + (rotationY === 0 ? 0.12 : 0), 0.55, z + (rotationY === 0 ? 0.16 : 0), { rotationY });
+            createBox(0.6, 0.14, 0.34, clothMat, x - (rotationY === 0 ? 0.68 : 0), 0.62, z, { rotationY });
+            createBox(2.3, 0.72, 0.12, woodDarkMat, x, 0.55, z + 0.66, { rotationY });
+        };
+
+        const createWeaponRack = (x, z, rotationY = 0) => {
+            createBox(1.7, 1.4, 0.26, woodDarkMat, x, 0.7, z, { rotationY });
+            [-0.52, -0.16, 0.2, 0.54].forEach((offset, index) => {
+                const spearX = x + (rotationY === Math.PI / 2 ? 0 : offset);
+                const spearZ = z + (rotationY === Math.PI / 2 ? offset : 0);
+                createCylinder(0.03, 0.03, 1.75, 6, woodMat, spearX, 1.05, spearZ, {
+                    rotationZ: rotationY === Math.PI / 2 ? Math.PI / 24 : -Math.PI / 24,
+                    rotationX: rotationY === Math.PI / 2 ? -Math.PI / 24 : 0,
+                });
+                createBox(0.1, 0.22, 0.04, ironMat, spearX, 1.88, spearZ + (index % 2 === 0 ? 0.05 : -0.05));
+            });
+        };
+
+        const createGoblet = (x, y, z) => {
+            createCylinder(0.05, 0.08, 0.1, 10, goldMat, x, y, z);
+            createCylinder(0.02, 0.02, 0.12, 8, goldMat, x, y - 0.09, z);
+        };
+
+        const createTreasurePile = (x, z) => {
+            [
+                { x: -0.28, z: -0.08, size: 0.12 },
+                { x: -0.1, z: 0.18, size: 0.1 },
+                { x: 0.14, z: 0.04, size: 0.11 },
+                { x: 0.32, z: 0.2, size: 0.13 },
+                { x: 0.04, z: -0.22, size: 0.09 },
+            ].forEach((piece) => {
+                createCylinder(piece.size, piece.size, 0.035, 10, goldMat, x + piece.x, 0.02, z + piece.z, { castShadow: false });
+            });
+        };
+
+        const createTreasureChest = (x, z, scale = 1) => {
+            createBox(1.28 * scale, 0.32 * scale, 1.22 * scale, woodDarkMat, x, 0.16 * scale, z);
+            createBox(1.34 * scale, 0.08 * scale, 1.28 * scale, goldMat, x, 0.3 * scale, z);
+            createBox(1.18 * scale, 0.2 * scale, 1.1 * scale, woodMat, x, 0.46 * scale, z);
+            createBox(1.24 * scale, 0.04 * scale, 1.18 * scale, goldMat, x, 0.54 * scale, z);
+            createBox(0.16 * scale, 0.16 * scale, 0.08 * scale, ironMat, x, 0.34 * scale, z + (0.6 * scale));
+            createTreasurePile(x - (0.5 * scale), z + (0.68 * scale));
+        };
+
+        const createCrown = (x, y, z, scale = 1) => {
+            createCylinder(0.22 * scale, 0.28 * scale, 0.12 * scale, 10, goldMat, x, y, z);
+            [-0.18, 0, 0.18].forEach((offsetX, index) => {
+                createCone(0.055 * scale, (index === 1 ? 0.22 : 0.18) * scale, 8, goldMat, x + offsetX, y + (0.13 * scale), z);
+            });
+            [-0.13, 0.13].forEach((offsetZ) => {
+                createCone(0.05 * scale, 0.16 * scale, 8, goldMat, x, y + (0.11 * scale), z + offsetZ);
+            });
+            createMesh(new THREE.SphereGeometry(0.05 * scale, 8, 8), rubyMat, { x, y: y + (0.05 * scale), z }, { castShadow: false });
+        };
+
+        const createCandelabra = (x, z, height = 1.5) => {
+            createCylinder(0.18, 0.24, 0.12, 12, goldMat, x, 0.06, z);
+            createCylinder(0.05, 0.07, height, 10, goldMat, x, 0.06 + (height / 2), z);
+            [-0.26, 0, 0.26].forEach((offsetX) => {
+                const armY = height + (offsetX === 0 ? 0.1 : -0.02);
+                const armZ = z + (offsetX === 0 ? 0 : 0.06);
+                createCylinder(0.03, 0.03, 0.34, 8, goldMat, x + offsetX, armY, armZ, {
+                    rotationZ: offsetX === 0 ? 0 : (offsetX < 0 ? Math.PI / 5 : -Math.PI / 5),
+                });
+                createCone(0.07, 0.16, 8, candleMat, x + offsetX, armY + 0.2, armZ, {
+                    castShadow: false,
+                    receiveShadow: false,
+                });
+            });
+        };
+
+        const createRoyalPedestal = (x, z, ornamentBuilder) => {
+            createBox(1.75, 0.72, 1.38, stoneMat, x, 0.36, z);
+            createBox(1.55, 0.1, 1.18, darkStoneMat, x, 0.77, z);
+            if (typeof ornamentBuilder === 'function') {
+                ornamentBuilder();
+            }
+        };
+
+        const createBanquetTable = (x, z, runnerMaterial) => {
+            createTableSet(x, z, 2.1, 7.2);
+            createBox(0.64, 0.04, 6.2, runnerMaterial, x, 1.1, z, { castShadow: false });
+            [-2.5, -0.85, 0.8, 2.45].forEach((offsetZ) => {
+                createBox(1.26, 0.04, 0.68, clothMat, x, 1.12, z + offsetZ, { castShadow: false });
+                createGoblet(x - 0.42, 1.2, z + offsetZ - 0.08);
+                createGoblet(x + 0.42, 1.2, z + offsetZ + 0.08);
+                createCylinder(0.18, 0.18, 0.02, 12, goldMat, x, 1.12, z + offsetZ, { castShadow: false });
+                createCone(0.05, 0.12, 8, candleMat, x, 1.22, z + offsetZ, { castShadow: false, receiveShadow: false });
+            });
+        };
+
+        const createMapStand = (x, z) => {
+            createBox(2.5, 0.82, 1.5, darkStoneMat, x, 0.41, z);
+            createBox(2.22, 0.1, 1.22, stoneMat, x, 0.87, z);
+            createBox(1.94, 0.05, 0.96, parchmentMat, x, 0.95, z, { castShadow: false });
+            createBox(0.34, 0.12, 0.34, goldMat, x, 1.02, z - 0.2);
+            createMesh(new THREE.SphereGeometry(0.18, 10, 10), emeraldMat, { x, y: 1.12, z: z + 0.18 }, { castShadow: false });
+        };
+
+        const createThrone = (x, z) => {
+            createBox(1.7, 0.22, 1.24, goldMat, x, 1.33, z);
+            createBox(1.18, 0.18, 0.92, royalVelvetMat, x, 1.48, z - 0.04);
+            createBox(0.24, 0.82, 0.98, goldMat, x - 0.66, 1.62, z - 0.04);
+            createBox(0.24, 0.82, 0.98, goldMat, x + 0.66, 1.62, z - 0.04);
+            createBox(1.62, 1.46, 0.18, goldMat, x, 2.0, z + 0.46);
+            createBox(1.16, 1.14, 0.12, royalVelvetMat, x, 1.94, z + 0.36);
+            createBox(1.88, 0.14, 0.42, goldMat, x, 2.74, z + 0.5);
+            [-0.72, -0.36, 0, 0.36, 0.72].forEach((offsetX, index) => {
+                createCone(0.1 + (index === 2 ? 0.03 : 0), 0.36 + (index === 2 ? 0.12 : 0), 8, goldMat, x + offsetX, 2.96 + (index === 2 ? 0.05 : 0), z + 0.5);
+            });
+            createMesh(new THREE.SphereGeometry(0.12, 10, 10), rubyMat, { x, y: 2.8, z: z + 0.4 }, { castShadow: false });
+        };
+
+        createBox(width + 3.2, 0.52, depth + 2.8, darkStoneMat, 0, 0.26, 0);
+        createBox(width + 1.8, 0.18, depth + 1.4, stoneMat, 0, 0.6, 0);
+        createBox(width - 0.8, 0.14, depth - 0.8, floorMat, 0, 0.08, 0);
+        createBox(width - 6.2, 0.05, depth - 5.2, floorAltMat, 0, 0.11, 0, { castShadow: false });
+
+        collisionRects.forEach((rect) => {
+            createBox(
+                rect.maxX - rect.minX,
+                wallHeight,
+                rect.maxZ - rect.minZ,
+                stoneMat,
+                (rect.minX + rect.maxX) / 2,
+                wallHeight / 2,
+                (rect.minZ + rect.maxZ) / 2
             );
         });
-        createMesh(
-            new THREE.BoxGeometry(0.62, 0.12, 0.62),
-            furnitureMat,
-            { x: 3.0, y: 0.58, z: -1.7 }
-        );
-        [
-            { x: 2.77, z: -1.93 },
-            { x: 3.23, z: -1.93 },
-            { x: 2.77, z: -1.47 },
-            { x: 3.23, z: -1.47 },
-        ].forEach((legPos) => {
-            createMesh(
-                new THREE.BoxGeometry(0.07, 0.44, 0.07),
-                furnitureMat,
-                { x: legPos.x, y: 0.28, z: legPos.z }
+
+        createBox(doorWidth, wallHeight - doorHeight, wallThickness, stoneMat, 0, doorHeight + ((wallHeight - doorHeight) / 2), gateZ);
+        createBox(doorWidth + 1.3, 0.22, wallThickness + 0.08, darkStoneMat, 0, doorHeight + 0.35, gateZ + 0.02);
+        createBox(doorWidth + 0.4, 0.18, 0.24, goldMat, 0, doorHeight - 0.15, gateZ - 0.08);
+
+        const gateDoorLeft = new THREE.Group();
+        gateDoorLeft.position.set(-(doorWidth / 2), 0, metrics.southEdge - 0.02);
+        gateDoorLeft.rotation.y = -1.08;
+        const leftDoorMesh = new THREE.Mesh(new THREE.BoxGeometry((doorWidth / 2) - 0.08, doorHeight, 0.14), woodMat);
+        leftDoorMesh.position.set(((doorWidth / 2) - 0.08) / 2, doorHeight / 2, 0);
+        leftDoorMesh.castShadow = true;
+        gateDoorLeft.add(leftDoorMesh);
+        houseGroup.add(gateDoorLeft);
+
+        const gateDoorRight = new THREE.Group();
+        gateDoorRight.position.set(doorWidth / 2, 0, metrics.southEdge - 0.02);
+        gateDoorRight.rotation.y = 1.08;
+        const rightDoorMesh = new THREE.Mesh(new THREE.BoxGeometry((doorWidth / 2) - 0.08, doorHeight, 0.14), woodMat);
+        rightDoorMesh.position.set(-(((doorWidth / 2) - 0.08) / 2), doorHeight / 2, 0);
+        rightDoorMesh.castShadow = true;
+        gateDoorRight.add(rightDoorMesh);
+        houseGroup.add(gateDoorRight);
+
+        const towerHeight = wallHeight + 4.2;
+        const towerCenters = buildHouseTowerElevators(localLayout).map((tower, index) => ({
+            ...tower,
+            bannerMat: index === 0 ? bannerBlueMat : bannerRedMat,
+        }));
+
+        const createTowerBattlements = (centerX, centerZ, baseY) => {
+            for (let index = 0; index < 12; index++) {
+                const angle = (index / 12) * Math.PI * 2;
+                const radius = towerCenters[0].towerRadius + 0.12;
+                createBox(
+                    0.48,
+                    0.95,
+                    0.82,
+                    darkStoneMat,
+                    centerX + (Math.cos(angle) * radius),
+                    baseY,
+                    centerZ + (Math.sin(angle) * radius),
+                    { rotationY: angle }
+                );
+            }
+        };
+
+        const createTowerElevator = (tower) => {
+            const liftMat = new THREE.MeshLambertMaterial({ color: 0x9f7a35 });
+            const glowMat = new THREE.MeshLambertMaterial({ color: 0xfacc15, emissive: 0xca8a04, emissiveIntensity: 0.18 });
+            const shadowMat = new THREE.MeshLambertMaterial({ color: 0x111827 });
+            const buttonPedestalMat = new THREE.MeshLambertMaterial({ color: 0x475569 });
+            const innerPassageLength = Math.abs(tower.x - tower.innerDoor.x) + 0.68;
+            const innerPassageCenterX = (tower.x + tower.innerDoor.x) / 2;
+
+            createCylinder(0.86, 0.94, 0.18, 18, ironMat, tower.x, 0.09, tower.z);
+            createCylinder(tower.towerRadius - 0.1, tower.towerRadius - 0.1, 0.2, 24, stoneMat, tower.x, tower.topY, tower.z);
+
+            const elevatorCar = new THREE.Group();
+            elevatorCar.position.set(tower.x, tower.topY, tower.z);
+            
+            const padMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.74, 0.08, 18), liftMat);
+            padMesh.castShadow = true;
+            padMesh.receiveShadow = true;
+            // Pad floor must be at exactly the Y position of the car group
+            elevatorCar.add(padMesh);
+
+            const recMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.82, 0.82, 0.2, 18), ironMat);
+            recMesh.position.y = -0.12;
+            elevatorCar.add(recMesh);
+            
+            const ringMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.7, 0.1, 18), glowMat);
+            ringMesh.position.y = +0.04;
+            elevatorCar.add(ringMesh);
+
+            houseGroup.add(elevatorCar);
+            if (!this.towerElevatorCars) this.towerElevatorCars = new Map();
+            this.towerElevatorCars.set(tower.id, elevatorCar);
+            createBox(innerPassageLength, 0.08, 1.72, floorAltMat, innerPassageCenterX, 0.19, tower.z + 0.08, {
+                castShadow: false,
+            });
+            createBox(innerPassageLength - 0.26, 0.04, 1.32, glowMat, innerPassageCenterX, 0.23, tower.z + 0.08, {
+                castShadow: false,
+            });
+
+            createBox(
+                tower.innerDoor.width + 0.45,
+                0.34,
+                0.28,
+                darkStoneMat,
+                tower.innerDoor.x,
+                tower.innerDoor.y + (tower.innerDoor.height / 2) + 0.17,
+                tower.innerDoor.z,
+                { rotationY: tower.innerDoor.rotationY }
             );
+            createBox(
+                0.225,
+                tower.innerDoor.height,
+                0.28,
+                darkStoneMat,
+                tower.innerDoor.x,
+                tower.innerDoor.y,
+                tower.innerDoor.z + (tower.innerDoor.width / 2) + 0.1125,
+                { rotationY: tower.innerDoor.rotationY }
+            );
+            createBox(
+                0.225,
+                tower.innerDoor.height,
+                0.28,
+                darkStoneMat,
+                tower.innerDoor.x,
+                tower.innerDoor.y,
+                tower.innerDoor.z - (tower.innerDoor.width / 2) - 0.1125,
+                { rotationY: tower.innerDoor.rotationY }
+            );
+            const doorGroup = new THREE.Group();
+            doorGroup.position.set(tower.innerDoor.x, tower.innerDoor.y, tower.innerDoor.z - (tower.innerDoor.width / 2));
+            doorGroup.rotation.y = tower.innerSideX === 1 ? -1.4 : 1.4;
+            const woodMesh = new THREE.Mesh(new THREE.BoxGeometry(0.16, tower.innerDoor.height, tower.innerDoor.width), woodMat);
+            woodMesh.position.set(0, 0, tower.innerDoor.width / 2);
+            woodMesh.castShadow = true;
+            doorGroup.add(woodMesh);
+            houseGroup.add(doorGroup);
+            createBox(
+                tower.innerDoor.width + 0.18,
+                0.18,
+                0.34,
+                goldMat,
+                tower.innerDoor.x,
+                tower.innerDoor.y + (tower.innerDoor.height / 2) + 0.16,
+                tower.innerDoor.z,
+                { rotationY: tower.innerDoor.rotationY }
+            );
+
+            createCylinder(0.24, 0.3, 0.7, 10, buttonPedestalMat, tower.callButton.x, 0.35, tower.callButton.z);
+            createBox(0.5, 0.08, 0.5, darkStoneMat, tower.callButton.x, 0.6, tower.callButton.z);
+            createCylinder(0.14, 0.16, 0.08, 12, glowMat, tower.callButton.x, 0.74, tower.callButton.z);
+            createBox(0.22, 0.04, 0.22, goldMat, tower.callButton.x, 0.84, tower.callButton.z, {
+                castShadow: false,
+            });
+
+            [-0.52, 0.52].forEach((offsetX) => {
+                [-0.52, 0.52].forEach((offsetZ) => {
+                    createCylinder(0.05, 0.05, tower.topY - 0.18, 8, ironMat, tower.x + offsetX, (tower.topY - 0.18) / 2, tower.z + offsetZ);
+                });
+            });
+
+            createBox(1.25, 0.06, 1.25, glowMat, tower.x, 0.27, tower.z, { castShadow: false });
+            createBox(1.15, 0.06, 1.15, glowMat, tower.x, tower.topY + 0.08, tower.z, { castShadow: false });
+        };
+
+        towerCenters.forEach((tower) => {
+            const gap = 0.65;
+            const thetaStart = (tower.innerSideX === 1 ? Math.PI/2 : -Math.PI/2) + (gap/2);
+            const thetaLength = (Math.PI * 2) - gap;
+            
+            const openStoneMat = stoneMat.clone();
+            openStoneMat.side = THREE.DoubleSide;
+            createMesh(new THREE.CylinderGeometry(tower.towerRadius, tower.towerRadius + 0.24, towerHeight, 20, 1, false, thetaStart, thetaLength), openStoneMat, { x: tower.x, y: towerHeight / 2, z: tower.z });
+            
+            const openDarkStoneMat = darkStoneMat.clone();
+            openDarkStoneMat.side = THREE.DoubleSide;
+            createMesh(new THREE.CylinderGeometry(tower.towerRadius + 0.35, tower.towerRadius + 0.35, 0.32, 20, 1, false, thetaStart, thetaLength), openDarkStoneMat, { x: tower.x, y: towerHeight + 0.16, z: tower.z });
+            createTowerBattlements(tower.x, tower.z, towerHeight + 0.62);
+            createBox(0.35, 1.4, 0.18, ironMat, tower.x, 4.2, tower.z - tower.towerRadius + 0.18);
+            createBox(0.35, 1.4, 0.18, ironMat, tower.x, 7.1, tower.z - tower.towerRadius + 0.18);
+            createBanner(tower.x, 6.8, tower.z - tower.towerRadius - 0.2, tower.bannerMat, 0, 1.2, 3.3);
+            createTowerElevator(tower);
         });
-        createMesh(
-            new THREE.BoxGeometry(0.62, 0.5, 0.08),
-            furnitureMat,
-            { x: 3.0, y: 0.84, z: -1.98 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.05, 1.55, 0.45),
-            shelfMat,
-            { x: 3.05, y: 0.78, z: 1.8 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(0.95, 0.06, 0.42),
-            trimMat,
-            { x: 3.05, y: 1.08, z: 1.8 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(0.95, 0.06, 0.42),
-            trimMat,
-            { x: 3.05, y: 1.42, z: 1.8 }
-        );
-        createMesh(
-            new THREE.CylinderGeometry(0.16, 0.22, 0.42, 10),
-            potMat,
-            { x: 3.05, y: 1.82, z: 1.83 }
-        );
-        createMesh(
-            new THREE.SphereGeometry(0.34, 10, 10),
-            leafMat,
-            { x: 3.05, y: 2.22, z: 1.83 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.1, 0.7, 0.08),
-            new THREE.MeshLambertMaterial({ color: 0xf5df90 }),
-            { x: 0, y: 2.35, z: backWallZ - 0.05 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.24, 0.84, 0.06),
-            trimMat,
-            { x: 0, y: 2.35, z: backWallZ - 0.09 }
-        );
-        createMesh(
-            new THREE.BoxGeometry(1.6, 0.18, 0.75),
-            trimMat,
-            { x: 0, y: 0.16, z: -halfDepth - 0.45 }
-        );
+
+        const createCrenellationsAlongX = (startX, endX, z, y, gapWidth = 1.15) => {
+            const span = endX - startX;
+            const blockCount = Math.max(2, Math.floor(span / gapWidth));
+            for (let index = 0; index < blockCount; index++) {
+                const x = THREE.MathUtils.lerp(startX + 0.4, endX - 0.4, blockCount === 1 ? 0.5 : index / (blockCount - 1));
+                createBox(0.58, 0.92, wallThickness + 0.12, darkStoneMat, x, y, z);
+            }
+        };
+
+        const createCrenellationsAlongZ = (startZ, endZ, x, y, gapWidth = 1.15) => {
+            const span = endZ - startZ;
+            const blockCount = Math.max(2, Math.floor(span / gapWidth));
+            for (let index = 0; index < blockCount; index++) {
+                const z = THREE.MathUtils.lerp(startZ + 0.4, endZ - 0.4, blockCount === 1 ? 0.5 : index / (blockCount - 1));
+                createBox(wallThickness + 0.12, 0.92, 0.58, darkStoneMat, x, y, z);
+            }
+        };
+
+        createBox(width, 0.26, wallThickness + 0.12, darkStoneMat, 0, wallHeight + 0.12, metrics.northEdge - (wallThickness / 2));
+        createBox(wallThickness + 0.12, 0.26, depth, darkStoneMat, metrics.westEdge + (wallThickness / 2), wallHeight + 0.12, 0);
+        createBox(wallThickness + 0.12, 0.26, depth, darkStoneMat, metrics.eastEdge - (wallThickness / 2), wallHeight + 0.12, 0);
+        createBox((width - doorWidth) / 2, 0.26, wallThickness + 0.12, darkStoneMat, -((doorWidth / 2) + ((width - doorWidth) / 4)), wallHeight + 0.12, gateZ);
+        createBox((width - doorWidth) / 2, 0.26, wallThickness + 0.12, darkStoneMat, (doorWidth / 2) + ((width - doorWidth) / 4), wallHeight + 0.12, gateZ);
+
+        createCrenellationsAlongX(metrics.westEdge + 0.6, metrics.eastEdge - 0.6, metrics.northEdge - (wallThickness / 2), wallHeight + 0.7);
+        createCrenellationsAlongX(metrics.westEdge + 0.6, -(doorWidth / 2) - 0.35, gateZ, wallHeight + 0.7);
+        createCrenellationsAlongX((doorWidth / 2) + 0.35, metrics.eastEdge - 0.6, gateZ, wallHeight + 0.7);
+        createCrenellationsAlongZ(metrics.southEdge + 0.6, metrics.northEdge - 0.6, metrics.westEdge + (wallThickness / 2), wallHeight + 0.7);
+        createCrenellationsAlongZ(metrics.southEdge + 0.6, metrics.northEdge - 0.6, metrics.eastEdge - (wallThickness / 2), wallHeight + 0.7);
+
+        for (let index = 0; index < 6; index++) {
+            const x = THREE.MathUtils.lerp(metrics.westEdge + 2.2, metrics.eastEdge - 2.2, index / 5);
+            createBox(0.35, 1.5, 0.18, ironMat, x, 4.45, metrics.northEdge - wallThickness + 0.07);
+        }
+        createBanner(-4.3, 5.2, metrics.northEdge - wallThickness + 0.18, bannerBlueMat, 0, 1.35, 3.1);
+        createBanner(4.3, 5.2, metrics.northEdge - wallThickness + 0.18, bannerRedMat, 0, 1.35, 3.1);
+
+        const throneZ = metrics.northEdge - 4.2;
+        const carpetStartZ = metrics.southEdge + 1.45;
+        const carpetEndZ = throneZ - 2.05;
+        const carpetCenterZ = (carpetStartZ + carpetEndZ) / 2;
+        const carpetLength = carpetEndZ - carpetStartZ;
+        const leftTableX = localLayout.position.x - 5.8;
+        const rightTableX = localLayout.position.x + 5.8;
+        const pedestalZ = throneZ + 0.59;
+        const chestZ = throneZ + 0.3;
+
+        createBox(4.25, 0.04, carpetLength + 0.55, goldMat, 0, 0.1, carpetCenterZ, { castShadow: false });
+        createBox(3.8, 0.05, carpetLength, carpetMat, 0, 0.12, carpetCenterZ, { castShadow: false });
+        createBox(6.2, 0.05, 2.35, carpetMat, 0, 0.76, throneZ - 0.15, { castShadow: false });
+
+        createBox(13.6, 0.34, 1.5, darkStoneMat, 0, 0.17, throneZ - 2.5);
+        createBox(11.6, 0.14, 1.18, stoneMat, 0, 0.29, throneZ - 2.5);
+        createBox(10.2, 0.38, 3.65, stoneMat, 0, 0.53, throneZ - 0.12);
+        createBox(9.1, 0.1, 2.95, darkStoneMat, 0, 0.77, throneZ - 0.05);
+        createBox(2.76, 0.5, 1.28, darkStoneMat, 0, 0.97, throneZ + 0.94);
+        createBox(2.18, 0.12, 0.98, goldMat, 0, 1.16, throneZ + 0.92);
+        createThrone(0, throneZ + 0.92);
+
+        createRoyalPedestal(-6.025, pedestalZ, () => {
+            createCrown(-6.025, 0.92, pedestalZ, 1.08);
+            createMesh(new THREE.SphereGeometry(0.12, 10, 10), emeraldMat, { x: -6.025, y: 1.08, z: pedestalZ + 0.22 }, { castShadow: false });
+        });
+        createRoyalPedestal(6.025, pedestalZ, () => {
+            createMesh(new THREE.SphereGeometry(0.2, 10, 10), rubyMat, { x: 6.025, y: 1.04, z: pedestalZ }, { castShadow: false });
+            createCylinder(0.03, 0.03, 0.42, 8, goldMat, 6.025, 0.96, pedestalZ);
+            createBox(0.18, 0.04, 0.18, goldMat, 6.025, 1.18, pedestalZ);
+        });
+
+        createTreasureChest(-8.025, chestZ, 1);
+        createTreasureChest(8.025, chestZ, 1);
+
+        createBanquetTable(leftTableX, localLayout.position.z, bannerBlueMat);
+        createBanquetTable(rightTableX, localLayout.position.z, bannerRedMat);
+        createMapStand(0, localLayout.position.z - 2.7);
+
+        createBanner(metrics.westEdge + 0.18, 4.7, -4.8, bannerBlueMat, Math.PI / 2, 1.15, 2.9);
+        createBanner(metrics.eastEdge - 0.18, 4.7, -4.8, bannerRedMat, -Math.PI / 2, 1.15, 2.9);
+        createBanner(metrics.westEdge + 0.18, 4.7, 1.8, bannerRedMat, Math.PI / 2, 1.15, 2.9);
+        createBanner(metrics.eastEdge - 0.18, 4.7, 1.8, bannerBlueMat, -Math.PI / 2, 1.15, 2.9);
+
+        [-5.4, -1.8, 1.5].forEach((hallZ) => {
+            createCandelabra(-2.75, hallZ);
+            createCandelabra(2.75, hallZ);
+        });
+        createCandelabra(-3.35, throneZ - 0.95, 1.72);
+        createCandelabra(3.35, throneZ - 0.95, 1.72);
+
+        createTorch(-(doorWidth / 2) - 1.15, 3.0, metrics.southEdge + 0.4);
+        createTorch((doorWidth / 2) + 1.15, 3.0, metrics.southEdge + 0.4);
+        createTorch(metrics.westEdge + 0.5, 3.2, -2.4, Math.PI / 2);
+        createTorch(metrics.eastEdge - 0.5, 3.2, -2.4, -Math.PI / 2);
+        createTorch(metrics.westEdge + 0.5, 3.2, 3.8, Math.PI / 2);
+        createTorch(metrics.eastEdge - 0.5, 3.2, 3.8, -Math.PI / 2);
+
+        createBox(5.2, 0.22, 1.8, darkStoneMat, 0, 0.15, metrics.southEdge - 1.0);
+        createBox(4.3, 0.22, 1.5, stoneMat, 0, 0.38, metrics.southEdge - 0.34);
+        createBox(3.6, 0.18, 1.1, stoneMat, 0, 0.6, metrics.southEdge + 0.22);
+
+        for (let index = 0; index < 4; index++) {
+            const slitX = THREE.MathUtils.lerp(metrics.westEdge + 2.2, metrics.eastEdge - 2.2, index / 3);
+            createBox(0.28, 1.6, 0.16, ironMat, slitX, 4.8, metrics.northEdge - 0.05);
+        }
+        for (let index = 0; index < 3; index++) {
+            const slitZ = THREE.MathUtils.lerp(metrics.southEdge + 4.0, metrics.northEdge - 2.8, index / 2);
+            createBox(0.16, 1.55, 0.26, ironMat, metrics.westEdge + 0.05, 4.6, slitZ);
+            createBox(0.16, 1.55, 0.26, ironMat, metrics.eastEdge - 0.05, 4.6, slitZ);
+        }
 
         houseGroup.position.set(position.x, position.y, position.z);
         this.scene.add(houseGroup);
@@ -1393,18 +1903,19 @@ class World {
 
     _createDecorations() {
         const grandstandFootprint = buildSoccerGrandstandFootprint(DEFAULT_SOCCER_FIELD_LAYOUT, 1.2);
+        const castleFootprint = buildHouseFootprint(this.houseLayout, 2.4);
         const flowerColors = [0xff69b4, 0xffd700, 0xff6347, 0xda70d6, 0xffa500];
         for (let i = 0; i < 60; i++) {
             const x = (Math.random() - 0.5) * 80;
             const z = (Math.random() - 0.5) * 80;
 
             const distToLake = Math.sqrt(x * x + z * z);
-            const distToHouse = Math.sqrt(x * x + (z - 20) * (z - 20));
             const isInsideSoccerField =
                 Math.abs(x - DEFAULT_SOCCER_FIELD_LAYOUT.position.x) < (DEFAULT_SOCCER_FIELD_LAYOUT.width / 2) + 1.5
                 && Math.abs(z - DEFAULT_SOCCER_FIELD_LAYOUT.position.z) < (DEFAULT_SOCCER_FIELD_LAYOUT.depth / 2) + 1.5;
             const isInsideGrandstand = isPointInsideRect({ x, z }, grandstandFootprint);
-            if (distToLake < this.lakeRadius + 2 || distToHouse < 7 || isInsideSoccerField || isInsideGrandstand) continue;
+            const isInsideCastle = isPointInsideRect({ x, z }, castleFootprint);
+            if (distToLake < this.lakeRadius + 2 || isInsideCastle || isInsideSoccerField || isInsideGrandstand) continue;
 
             const flowerGeo = new THREE.SphereGeometry(0.12, 6, 6);
             const flowerMat = new THREE.MeshLambertMaterial({
@@ -1420,37 +1931,6 @@ class World {
             stem.position.set(x, 0.08, z);
             this.scene.add(stem);
         }
-
-        const fenceMat = new THREE.MeshLambertMaterial({ color: 0xc4a56e });
-        const fencePositions = [
-            { x: -6.5, z: 15, ry: 0 },
-            { x: 6.5, z: 15, ry: 0 },
-            { x: -6.5, z: 25, ry: 0 },
-            { x: 6.5, z: 25, ry: 0 },
-        ];
-        fencePositions.forEach((fp) => {
-            for (let i = 0; i < 5; i++) {
-                const post = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.1, 1.2, 0.1),
-                    fenceMat
-                );
-                post.position.set(fp.x + (i - 2) * 0.8, 0.6, fp.z);
-                post.castShadow = true;
-                this.scene.add(post);
-            }
-            const rail = new THREE.Mesh(
-                new THREE.BoxGeometry(4, 0.08, 0.08),
-                fenceMat
-            );
-            rail.position.set(fp.x, 0.9, fp.z);
-            this.scene.add(rail);
-            const rail2 = new THREE.Mesh(
-                new THREE.BoxGeometry(4, 0.08, 0.08),
-                fenceMat
-            );
-            rail2.position.set(fp.x, 0.4, fp.z);
-            this.scene.add(rail2);
-        });
     }
 
     update(time) {
@@ -1525,6 +2005,43 @@ class World {
             const pulseScale = 1 + (Math.sin((time * 3.4) + floatSeed + index) * 0.04);
             marker.scale.setScalar(pulseScale);
         });
+
+        Array.from(this.looseSwords.values()).forEach((marker, index) => {
+            const baseY = Number(marker.userData.baseY) || 0.28;
+            const floatSeed = Number(marker.userData.floatSeed) || 0;
+            marker.position.y = baseY + (Math.sin((time * 2.3) + floatSeed + index) * 0.048);
+            marker.rotation.y += 0.012;
+            const pulseScale = 1 + (Math.sin((time * 3.1) + floatSeed + index) * 0.032);
+            marker.scale.setScalar(pulseScale);
+        });
+
+        Array.from(this.looseBows.values()).forEach((marker, index) => {
+            const baseY = Number(marker.userData.baseY) || 0.28;
+            const floatSeed = Number(marker.userData.floatSeed) || 0;
+            marker.position.y = baseY + (Math.sin((time * 2.1) + floatSeed + index) * 0.05);
+            marker.rotation.y += 0.008;
+            const pulseScale = 1 + (Math.sin((time * 2.9) + floatSeed + index) * 0.035);
+            marker.scale.setScalar(pulseScale);
+        });
+
+        Array.from(this.arrowProjectiles.values()).forEach((marker) => {
+            const targetPosition = marker.userData.targetPosition;
+            if (targetPosition instanceof THREE.Vector3) {
+                marker.position.lerp(targetPosition, 0.72);
+            }
+
+            if (typeof marker.userData.targetRotationY === 'number') {
+                marker.rotation.y = marker.userData.targetRotationY;
+            }
+        });
+
+        if (this.towerElevatorCars) {
+            this.towerElevatorCars.forEach((car) => {
+                if (typeof car.targetY === 'number') {
+                    car.position.y += (car.targetY - car.position.y) * 0.35;
+                }
+            });
+        }
     }
 
     setWorldBounds(bounds) {
@@ -1534,14 +2051,34 @@ class World {
     }
 
     _getActorGroundHeight(position) {
-        for (let index = this.soccerGrandstandStepSurfaces.length - 1; index >= 0; index -= 1) {
-            const surface = this.soccerGrandstandStepSurfaces[index];
+        let h = 0;
+        for (let index = this.houseStepSurfaces.length - 1; index >= 0; index -= 1) {
+            const surface = this.houseStepSurfaces[index];
             if (isPointInsideRect(position, surface, 0)) {
-                return Number(surface.height) || 0;
+                h = Math.max(h, Number(surface.height) || 0);
             }
         }
 
-        return 0;
+        for (let index = this.soccerGrandstandStepSurfaces.length - 1; index >= 0; index -= 1) {
+            const surface = this.soccerGrandstandStepSurfaces[index];
+            if (isPointInsideRect(position, surface, 0)) {
+                h = Math.max(h, Number(surface.height) || 0);
+            }
+        }
+
+        if (this.towerElevatorsState && this.houseTowerElevators) {
+            for (let i = 0; i < this.houseTowerElevators.length; i++) {
+                const layout = this.houseTowerElevators[i];
+                if (isPointInsideRect(position, layout.topSurface, 0)) {
+                    const state = this.towerElevatorsState.find(e => e.id === layout.id);
+                    if (state) {
+                        h = Math.max(h, Number(state.y) || 0);
+                    }
+                }
+            }
+        }
+
+        return h;
     }
 
     isBlockedPosition(position, padding = PLAYER_COLLISION_RADIUS) {
@@ -1701,6 +2238,379 @@ class World {
             if (child.geometry) {
                 child.geometry.dispose();
             }
+        });
+    }
+
+    _createSwordPickupMarker(swordState) {
+        const swordGroup = new THREE.Group();
+        const bladeMat = new THREE.MeshLambertMaterial({ color: 0xcbd5e1 });
+        const guardMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+        const gripMat = new THREE.MeshLambertMaterial({ color: 0x6b4423 });
+        const pommelMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+
+        const blade = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 1.08, 0.18),
+            bladeMat
+        );
+        blade.position.y = 0.56;
+        blade.castShadow = true;
+        blade.receiveShadow = true;
+        swordGroup.add(blade);
+
+        const fuller = new THREE.Mesh(
+            new THREE.BoxGeometry(0.018, 0.82, 0.05),
+            pommelMat
+        );
+        fuller.position.set(0, 0.6, 0);
+        swordGroup.add(fuller);
+
+        const guard = new THREE.Mesh(
+            new THREE.BoxGeometry(0.52, 0.08, 0.12),
+            guardMat
+        );
+        guard.position.y = 0.06;
+        guard.castShadow = true;
+        guard.receiveShadow = true;
+        swordGroup.add(guard);
+
+        const grip = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 0.38, 8),
+            gripMat
+        );
+        grip.position.y = -0.16;
+        grip.castShadow = true;
+        grip.receiveShadow = true;
+        swordGroup.add(grip);
+
+        const pommel = new THREE.Mesh(
+            new THREE.SphereGeometry(0.08, 8, 8),
+            pommelMat
+        );
+        pommel.position.y = -0.38;
+        swordGroup.add(pommel);
+
+        swordGroup.position.set(
+            Number(swordState?.position?.x) || 0,
+            Number(swordState?.position?.y) || 0.28,
+            Number(swordState?.position?.z) || 0
+        );
+        swordGroup.rotation.z = -0.3;
+        swordGroup.rotation.y = Math.random() * Math.PI * 2;
+        swordGroup.userData.baseY = swordGroup.position.y;
+        swordGroup.userData.floatSeed = Math.random() * Math.PI * 2;
+        this.scene.add(swordGroup);
+        return swordGroup;
+    }
+
+    _disposeSwordPickupMarker(marker) {
+        if (!marker) {
+            return;
+        }
+
+        marker.traverse((child) => {
+            if (child.material) {
+                child.material.dispose();
+            }
+
+            if (child.geometry) {
+                child.geometry.dispose();
+            }
+        });
+    }
+
+    syncSwordPickups(swordStates) {
+        const activeIds = new Set();
+        const nextSwordStates = Array.isArray(swordStates) ? swordStates : [];
+
+        nextSwordStates.forEach((swordState) => {
+            if (!swordState?.id) {
+                return;
+            }
+
+            activeIds.add(swordState.id);
+
+            if (!this.looseSwords.has(swordState.id)) {
+                this.looseSwords.set(swordState.id, this._createSwordPickupMarker(swordState));
+                return;
+            }
+
+            const marker = this.looseSwords.get(swordState.id);
+            marker.position.set(
+                Number(swordState?.position?.x) || 0,
+                Number(swordState?.position?.y) || 0.28,
+                Number(swordState?.position?.z) || 0
+            );
+            marker.userData.baseY = marker.position.y;
+        });
+
+        Array.from(this.looseSwords.entries()).forEach(([swordId, marker]) => {
+            if (activeIds.has(swordId)) {
+                return;
+            }
+
+            this.scene.remove(marker);
+            this._disposeSwordPickupMarker(marker);
+            this.looseSwords.delete(swordId);
+        });
+    }
+
+    _createBowPickupMarker(bowState) {
+        const bowGroup = new THREE.Group();
+        const woodMat = new THREE.MeshLambertMaterial({ color: 0x7c4a21 });
+        const gripMat = new THREE.MeshLambertMaterial({ color: 0x5b3420 });
+        const stringMat = new THREE.MeshLambertMaterial({ color: 0xf1f5f9 });
+        const arrowShaftMat = new THREE.MeshLambertMaterial({ color: 0xc08457 });
+        const arrowTipMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+        const arrowFeatherMat = new THREE.MeshLambertMaterial({ color: 0xef4444 });
+
+        const bowArc = new THREE.Mesh(
+            new THREE.TorusGeometry(0.42, 0.04, 6, 20, Math.PI),
+            woodMat
+        );
+        bowArc.rotation.set(Math.PI / 2, Math.PI / 2, 0);
+        bowArc.castShadow = true;
+        bowArc.receiveShadow = true;
+        bowGroup.add(bowArc);
+
+        const grip = new THREE.Mesh(
+            new THREE.BoxGeometry(0.12, 0.42, 0.12),
+            gripMat
+        );
+        grip.rotation.z = Math.PI / 2;
+        grip.castShadow = true;
+        grip.receiveShadow = true;
+        bowGroup.add(grip);
+
+        const string = new THREE.Mesh(
+            new THREE.BoxGeometry(0.02, 0.86, 0.02),
+            stringMat
+        );
+        string.rotation.z = Math.PI / 2;
+        string.position.x = -0.01;
+        bowGroup.add(string);
+
+        const arrowMeshes = [-0.12, 0.12].map((offsetZ) => {
+            const arrowGroup = new THREE.Group();
+            const shaft = new THREE.Mesh(
+                new THREE.BoxGeometry(0.06, 0.06, 0.84),
+                arrowShaftMat
+            );
+            shaft.castShadow = true;
+            shaft.receiveShadow = true;
+            arrowGroup.add(shaft);
+
+            const tip = new THREE.Mesh(
+                new THREE.ConeGeometry(0.06, 0.16, 6),
+                arrowTipMat
+            );
+            tip.rotation.x = Math.PI / 2;
+            tip.position.z = 0.48;
+            arrowGroup.add(tip);
+
+            const feather = new THREE.Mesh(
+                new THREE.BoxGeometry(0.12, 0.02, 0.14),
+                arrowFeatherMat
+            );
+            feather.position.z = -0.36;
+            arrowGroup.add(feather);
+
+            arrowGroup.rotation.x = Math.PI / 2;
+            arrowGroup.position.set(0.22, -0.05, offsetZ);
+            bowGroup.add(arrowGroup);
+            return arrowGroup;
+        });
+
+        bowGroup.position.set(
+            Number(bowState?.position?.x) || 0,
+            Number(bowState?.position?.y) || 0.28,
+            Number(bowState?.position?.z) || 0
+        );
+        bowGroup.rotation.y = Math.random() * Math.PI * 2;
+        bowGroup.userData.baseY = bowGroup.position.y;
+        bowGroup.userData.floatSeed = Math.random() * Math.PI * 2;
+        bowGroup.userData.arrowMeshes = arrowMeshes;
+        this.scene.add(bowGroup);
+        this._updateBowPickupMarker(bowGroup, bowState);
+        return bowGroup;
+    }
+
+    _updateBowPickupMarker(marker, bowState) {
+        if (!marker) {
+            return;
+        }
+
+        marker.position.set(
+            Number(bowState?.position?.x) || 0,
+            Number(bowState?.position?.y) || 0.28,
+            Number(bowState?.position?.z) || 0
+        );
+        marker.userData.baseY = marker.position.y;
+
+        const arrowsRemaining = Math.max(0, Math.trunc(Number(bowState?.arrowsRemaining) || 0));
+        const arrowMeshes = Array.isArray(marker.userData.arrowMeshes) ? marker.userData.arrowMeshes : [];
+        arrowMeshes.forEach((arrowMesh, index) => {
+            arrowMesh.visible = index < arrowsRemaining;
+        });
+    }
+
+    _disposeBowPickupMarker(marker) {
+        if (!marker) {
+            return;
+        }
+
+        marker.traverse((child) => {
+            if (child.material) {
+                child.material.dispose();
+            }
+
+            if (child.geometry) {
+                child.geometry.dispose();
+            }
+        });
+    }
+
+    syncBowPickups(bowStates) {
+        const activeIds = new Set();
+        const nextBowStates = Array.isArray(bowStates) ? bowStates : [];
+
+        nextBowStates.forEach((bowState) => {
+            if (!bowState?.id) {
+                return;
+            }
+
+            activeIds.add(bowState.id);
+
+            if (!this.looseBows.has(bowState.id)) {
+                this.looseBows.set(bowState.id, this._createBowPickupMarker(bowState));
+                return;
+            }
+
+            this._updateBowPickupMarker(this.looseBows.get(bowState.id), bowState);
+        });
+
+        Array.from(this.looseBows.entries()).forEach(([bowId, marker]) => {
+            if (activeIds.has(bowId)) {
+                return;
+            }
+
+            this.scene.remove(marker);
+            this._disposeBowPickupMarker(marker);
+            this.looseBows.delete(bowId);
+        });
+    }
+
+    syncElevators(elevatorsStates) {
+        this.towerElevatorsState = Array.isArray(elevatorsStates) ? elevatorsStates : [];
+        this.towerElevatorsState.forEach((eState) => {
+            if (this.towerElevatorCars && this.towerElevatorCars.has(eState.id)) {
+                const car = this.towerElevatorCars.get(eState.id);
+                // The logical elevator floor y matches the car group position y
+                car.targetY = Number(eState.y) || 0;
+            }
+        });
+    }
+
+    _createArrowProjectileMarker(arrowState) {
+        const arrowGroup = new THREE.Group();
+        const shaftMat = new THREE.MeshLambertMaterial({ color: 0xd6a56c });
+        const tipMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+        const featherMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+
+        const shaft = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.028, 0.028, 0.94, 6),
+            shaftMat
+        );
+        shaft.rotation.x = Math.PI / 2;
+        shaft.castShadow = true;
+        shaft.receiveShadow = true;
+        arrowGroup.add(shaft);
+
+        const tip = new THREE.Mesh(
+            new THREE.ConeGeometry(0.07, 0.18, 6),
+            tipMat
+        );
+        tip.rotation.x = -Math.PI / 2;
+        tip.position.z = 0.53;
+        arrowGroup.add(tip);
+
+        const leftFeather = new THREE.Mesh(
+            new THREE.BoxGeometry(0.14, 0.02, 0.12),
+            featherMat
+        );
+        leftFeather.position.set(-0.05, 0.04, -0.35);
+        leftFeather.rotation.z = Math.PI / 5;
+        arrowGroup.add(leftFeather);
+
+        const rightFeather = leftFeather.clone();
+        rightFeather.position.x = 0.05;
+        rightFeather.rotation.z = -Math.PI / 5;
+        arrowGroup.add(rightFeather);
+
+        arrowGroup.position.set(
+            Number(arrowState?.position?.x) || 0,
+            Number(arrowState?.position?.y) || 0,
+            Number(arrowState?.position?.z) || 0
+        );
+        arrowGroup.rotation.y = Number(arrowState?.rotationY) || 0;
+        arrowGroup.userData.targetPosition = new THREE.Vector3(
+            Number(arrowState?.position?.x) || 0,
+            Number(arrowState?.position?.y) || 0,
+            Number(arrowState?.position?.z) || 0
+        );
+        arrowGroup.userData.targetRotationY = Number(arrowState?.rotationY) || 0;
+        this.scene.add(arrowGroup);
+        return arrowGroup;
+    }
+
+    _disposeArrowProjectileMarker(marker) {
+        if (!marker) {
+            return;
+        }
+
+        marker.traverse((child) => {
+            if (child.material) {
+                child.material.dispose();
+            }
+
+            if (child.geometry) {
+                child.geometry.dispose();
+            }
+        });
+    }
+
+    syncArrowProjectiles(arrowStates) {
+        const activeIds = new Set();
+        const nextArrowStates = Array.isArray(arrowStates) ? arrowStates : [];
+
+        nextArrowStates.forEach((arrowState) => {
+            if (!arrowState?.id) {
+                return;
+            }
+
+            activeIds.add(arrowState.id);
+
+            if (!this.arrowProjectiles.has(arrowState.id)) {
+                this.arrowProjectiles.set(arrowState.id, this._createArrowProjectileMarker(arrowState));
+                return;
+            }
+
+            const marker = this.arrowProjectiles.get(arrowState.id);
+            marker.userData.targetPosition.set(
+                Number(arrowState?.position?.x) || 0,
+                Number(arrowState?.position?.y) || 0,
+                Number(arrowState?.position?.z) || 0
+            );
+            marker.userData.targetRotationY = Number(arrowState?.rotationY) || 0;
+        });
+
+        Array.from(this.arrowProjectiles.entries()).forEach(([arrowId, marker]) => {
+            if (activeIds.has(arrowId)) {
+                return;
+            }
+
+            this.scene.remove(marker);
+            this._disposeArrowProjectileMarker(marker);
+            this.arrowProjectiles.delete(arrowId);
         });
     }
 

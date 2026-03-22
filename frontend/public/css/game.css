@@ -38,6 +38,7 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
     padding: 12px 24px;
     background: var(--hud-bg);
     backdrop-filter: blur(12px);
@@ -49,6 +50,7 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;
 }
 
 .hud-avatar {
@@ -63,12 +65,50 @@ body {
     font-weight: 600;
     font-size: 16px;
     color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .hud-actions {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
+}
+
+.hud-menu-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px;
+    border: 1px solid rgba(56, 189, 126, 0.22);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.82);
+}
+
+.hud-menu-tab {
+    padding: 8px 14px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-dim);
+    font-family: 'Outfit', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.hud-menu-tab:hover {
+    background: rgba(56, 189, 126, 0.14);
+    color: var(--text);
+    transform: translateY(-1px);
+}
+
+.hud-menu-tab.active {
+    background: rgba(56, 189, 126, 0.22);
+    color: #dcfce7;
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 126, 0.18);
 }
 
 .btn-secondary,
@@ -110,6 +150,7 @@ body {
     transform: translateY(-1px);
 }
 
+.commands-panel,
 .profile-panel {
     position: fixed;
     top: 78px;
@@ -124,16 +165,16 @@ body {
     z-index: 118;
 }
 
+.commands-panel {
+    width: min(420px, calc(100vw - 32px));
+}
+
+.commands-panel[hidden],
 .profile-panel[hidden] {
     display: none;
 }
 
-.profile-form {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-}
-
+.commands-header,
 .profile-header {
     display: flex;
     justify-content: space-between;
@@ -141,12 +182,14 @@ body {
     gap: 12px;
 }
 
+.commands-title,
 .profile-title {
     color: var(--text);
     font-size: 15px;
     font-weight: 700;
 }
 
+.commands-copy,
 .profile-copy,
 .profile-note {
     color: var(--text-dim);
@@ -154,6 +197,7 @@ body {
     line-height: 1.45;
 }
 
+.commands-close,
 .profile-close {
     padding: 0;
     border: 0;
@@ -163,6 +207,53 @@ body {
     font-size: 12px;
     font-weight: 700;
     cursor: pointer;
+}
+
+.commands-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+.command-row {
+    display: grid;
+    grid-template-columns: minmax(110px, auto) 1fr;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 14px;
+    background: rgba(15, 23, 42, 0.82);
+}
+
+.command-keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.command-keys kbd {
+    display: inline-block;
+    padding: 1px 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 12px;
+    color: var(--text);
+}
+
+.command-description {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.profile-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
 }
 
 .profile-field {
@@ -388,6 +479,10 @@ body {
 }
 
 .leaderboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     margin-bottom: 12px;
 }
 
@@ -395,6 +490,33 @@ body {
     color: var(--text);
     font-size: 16px;
     font-weight: 700;
+}
+
+.leaderboard-minimize-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    border: 1px solid rgba(56, 189, 126, 0.28);
+    background: rgba(15, 23, 42, 0.96);
+    color: var(--text);
+    font: inherit;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.leaderboard-panel.minimized {
+    width: min(260px, calc(100vw - 32px));
+    padding-bottom: 14px;
+}
+
+.leaderboard-panel.minimized .leaderboard-header {
+    margin-bottom: 0;
+}
+
+.leaderboard-panel.minimized .leaderboard-sections {
+    display: none;
 }
 
 .leaderboard-sections {
@@ -797,74 +919,6 @@ body {
     left: 54px;
 }
 
-.hud-controls {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    padding: 14px 18px;
-    background: var(--hud-bg);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--hud-border);
-    border-radius: 14px;
-    z-index: 100;
-    font-size: 13px;
-    color: var(--text-dim);
-    line-height: 1.7;
-    box-shadow: var(--panel-shadow);
-}
-
-.hud-controls.minimized {
-    padding: 12px 14px;
-    min-width: 138px;
-}
-
-.hud-controls-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.hud-controls-title {
-    color: var(--text);
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-}
-
-.hud-controls-toggle {
-    width: 28px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text);
-    font: inherit;
-    font-size: 18px;
-    font-weight: 700;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.hud-controls-content {
-    margin-top: 10px;
-}
-
-.hud-controls-content[hidden] {
-    display: none;
-}
-
-.hud-controls kbd {
-    display: inline-block;
-    padding: 1px 6px;
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 4px;
-    font-family: 'Outfit', sans-serif;
-    font-size: 12px;
-    color: var(--text);
-}
-
 .loading-screen {
     position: fixed;
     inset: 0;
@@ -904,6 +958,22 @@ body {
 @media (max-width: 720px) {
     .hud-top {
         padding: 12px 16px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .hud-actions {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+    }
+
+    .hud-menu-tabs {
+        max-width: 100%;
+    }
+
+    .hud-menu-tab {
+        padding-inline: 12px;
     }
 
     .leaderboard-panel {
@@ -916,12 +986,6 @@ body {
 
     .leaderboard-sections {
         gap: 12px;
-    }
-
-    .hud-controls {
-        right: 14px;
-        bottom: 14px;
-        font-size: 12px;
     }
 
     .mobile-controls {
@@ -964,6 +1028,18 @@ body {
         right: 12px;
         left: 12px;
         width: auto;
+    }
+
+    .commands-panel {
+        top: 74px;
+        right: 12px;
+        left: 12px;
+        width: auto;
+    }
+
+    .command-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
     }
 }
 

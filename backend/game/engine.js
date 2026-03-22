@@ -13,8 +13,11 @@ const {
 const { createOpenAiDecisionClient } = require('../services/openai-client');
 const {
   createWorldState,
+  getHouseTowerElevators,
   getPublicWorldState,
   getTargetById,
+  getWorldCollisionBoxes,
+  isPositionBlocked,
   LAKE,
   PLAYER_COLLISION_RADIUS,
   SOCCER_FIELD,
@@ -43,6 +46,36 @@ const SOCCER_GOAL_CELEBRATION_MS = 3000;
 const DROPPED_APPLE_PICKUP_RADIUS = 2.25;
 const DROPPED_APPLE_DROP_DISTANCE = 0.95;
 const DROPPED_APPLE_GROUND_Y = 0.22;
+const TOWER_ELEVATOR_ACTION_RADIUS = 1.45;
+const TOWER_ELEVATOR_BUTTON_ACTION_RADIUS = 1.9;
+const TOWER_ELEVATOR_VERTICAL_TOLERANCE = 1.35;
+const TOWER_ELEVATOR_COOLDOWN_MS = 900;
+const BOW_PICKUP_RADIUS = 2.15;
+const BOW_DROP_DISTANCE = 1.08;
+const BOW_GROUND_OFFSET_Y = 0.28;
+const BOW_DEFAULT_ARROW_COUNT = 2;
+const SWORD_PICKUP_RADIUS = 2.05;
+const SWORD_DROP_DISTANCE = 1.02;
+const SWORD_GROUND_OFFSET_Y = 0.28;
+const SWORD_ATTACK_RADIUS = 2.3;
+const SWORD_ATTACK_VERTICAL_TOLERANCE = 1.8;
+const SWORD_ATTACK_ARC_DOT_THRESHOLD = 0.2;
+const SWORD_ATTACK_LINE_PADDING = 0.2;
+const SWORD_HIT_WATER_DAMAGE = 30;
+const SWORD_HIT_APPLE_DAMAGE = 1;
+const SWORD_KNOCKBACK_DISTANCE = 2.7;
+const SWORD_KNOCKBACK_STEP_DISTANCE = 0.45;
+const ARROW_PROJECTILE_SPEED = 26;
+const ARROW_PROJECTILE_RADIUS = 0.08;
+const ARROW_PROJECTILE_LIFETIME_MS = 1300;
+const ARROW_FORWARD_OFFSET = 0.82;
+const ARROW_START_HEIGHT = 1.46;
+const ARROW_HIT_RADIUS = PLAYER_COLLISION_RADIUS + 0.22;
+const ARROW_HIT_MIN_Y_OFFSET = 0.25;
+const ARROW_HIT_MAX_Y_OFFSET = 2.45;
+const ARROW_WATER_DAMAGE = 24;
+const ARROW_APPLE_DAMAGE = 1;
+const ACTOR_HIT_FLASH_DURATION_MS = 650;
 const PLAYER_SPEECH_DURATION_MS = 5000;
 const RESPAWN_DELAY_MS = 5000;
 const GRAVE_DURATION_MS = 60000;
@@ -59,6 +92,12 @@ const DEFAULT_CHAT_BLOCKED_WORDS = Object.freeze([
   'fdp',
   'otario',
 ]);
+const AI_ROUTE_CORNER_MARGIN = 0.35;
+const AI_ROUTE_SAMPLE_STEP = 0.45;
+const AI_ROUTE_WAYPOINT_RADIUS = 0.9;
+const AI_ROUTE_STUCK_DISTANCE = 0.05;
+const AI_ROUTE_REPLAN_TICKS = 4;
+const AI_ROUTE_REPLAN_LIMIT = 3;
 
 const AI_SPAWN_POINT = Object.freeze({ x: -3, y: 0, z: 15 });
 
@@ -260,6 +299,257 @@ function distanceBetween(a, b) {
   return Math.sqrt((dx * dx) + (dz * dz));
 }
 
+function buildRoutePointKey(point) {
+  return `${roundNumber(point?.x || 0, 2)}:${roundNumber(point?.z || 0, 2)}`;
+}
+
+function isPointWithinWorldBounds(worldState, point, margin = 0) {
+  const bounds = Number.isFinite(worldState?.bounds) ? worldState.bounds : 45;
+  return (
+    (Number(point?.x) || 0) >= (-bounds + margin)
+    && (Number(point?.x) || 0) <= (bounds - margin)
+    && (Number(point?.z) || 0) >= (-bounds + margin)
+    && (Number(point?.z) || 0) <= (bounds - margin)
+  );
+}
+
+function isRoutePointWalkable(worldState, point, padding = PLAYER_COLLISION_RADIUS) {
+  return isPointWithinWorldBounds(worldState, point, 0.05)
+    && !isPositionBlocked(worldState, point, padding);
+}
+
+function isRouteSegmentClear(worldState, start, end, padding = PLAYER_COLLISION_RADIUS) {
+  if (!start || !end) {
+    return false;
+  }
+
+  if (!isPointWithinWorldBounds(worldState, start, 0.05) || !isRoutePointWalkable(worldState, end, padding)) {
+    return false;
+  }
+
+  const distance = distanceBetween(start, end);
+  if (distance <= 0.0001) {
+    return true;
+  }
+
+  const sampleCount = Math.max(1, Math.ceil(distance / AI_ROUTE_SAMPLE_STEP));
+
+  for (let index = 1; index < sampleCount; index += 1) {
+    const progress = index / sampleCount;
+    const samplePoint = {
+      x: start.x + ((end.x - start.x) * progress),
+      y: start.y + ((end.y || start.y || 0) - (start.y || 0)) * progress,
+      z: start.z + ((end.z - start.z) * progress),
+    };
+
+    if (!isPointWithinWorldBounds(worldState, samplePoint, 0.05) || isPositionBlocked(worldState, samplePoint, padding)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function buildAiRouteGraphNodes(worldState, start, target, padding = PLAYER_COLLISION_RADIUS) {
+  const nodes = [];
+  const seenKeys = new Set();
+  const cornerOffset = padding + AI_ROUTE_CORNER_MARGIN;
+  const collisionBoxes = getWorldCollisionBoxes(worldState);
+
+  const addNode = (point, { force = false } = {}) => {
+    if (!point) {
+      return;
+    }
+
+    const node = {
+      x: Number(point.x) || 0,
+      y: Number(point.y) || 0,
+      z: Number(point.z) || 0,
+    };
+    const key = buildRoutePointKey(node);
+    if (seenKeys.has(key)) {
+      return;
+    }
+
+    if (!force && !isRoutePointWalkable(worldState, node, padding)) {
+      return;
+    }
+
+    seenKeys.add(key);
+    nodes.push(node);
+  };
+
+  addNode(start, { force: true });
+  addNode(target);
+
+  collisionBoxes.forEach((rect) => {
+    addNode({ x: rect.minX - cornerOffset, y: start.y, z: rect.minZ - cornerOffset });
+    addNode({ x: rect.minX - cornerOffset, y: start.y, z: rect.maxZ + cornerOffset });
+    addNode({ x: rect.maxX + cornerOffset, y: start.y, z: rect.minZ - cornerOffset });
+    addNode({ x: rect.maxX + cornerOffset, y: start.y, z: rect.maxZ + cornerOffset });
+  });
+
+  return nodes;
+}
+
+function compressAiRoute(worldState, start, routePoints, padding = PLAYER_COLLISION_RADIUS) {
+  if (!Array.isArray(routePoints) || routePoints.length === 0) {
+    return [];
+  }
+
+  const compressedRoute = [];
+  let anchor = clonePoint(start);
+  let index = 0;
+
+  while (index < routePoints.length) {
+    let furthestReachableIndex = index;
+
+    for (let candidateIndex = routePoints.length - 1; candidateIndex > index; candidateIndex -= 1) {
+      if (isRouteSegmentClear(worldState, anchor, routePoints[candidateIndex], padding)) {
+        furthestReachableIndex = candidateIndex;
+        break;
+      }
+    }
+
+    const nextPoint = routePoints[furthestReachableIndex];
+    compressedRoute.push({
+      x: Number(nextPoint.x) || 0,
+      y: Number(nextPoint.y) || 0,
+      z: Number(nextPoint.z) || 0,
+    });
+    anchor = nextPoint;
+    index = furthestReachableIndex + 1;
+  }
+
+  return compressedRoute;
+}
+
+function computeAiRoute(worldState, start, target, padding = PLAYER_COLLISION_RADIUS) {
+  if (!start || !target || !isPointWithinWorldBounds(worldState, start, 0.05) || !isRoutePointWalkable(worldState, target, padding)) {
+    return [];
+  }
+
+  if (isRouteSegmentClear(worldState, start, target, padding)) {
+    return [clonePoint(target)];
+  }
+
+  const nodes = buildAiRouteGraphNodes(worldState, start, target, padding);
+  if (nodes.length < 2) {
+    return [];
+  }
+
+  const targetIndex = nodes.findIndex((node) => buildRoutePointKey(node) === buildRoutePointKey(target));
+  if (targetIndex <= 0) {
+    return [];
+  }
+
+  const adjacency = Array.from({ length: nodes.length }, () => []);
+  for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+      if (!isRouteSegmentClear(worldState, nodes[leftIndex], nodes[rightIndex], padding)) {
+        continue;
+      }
+
+      const cost = distanceBetween(nodes[leftIndex], nodes[rightIndex]);
+      adjacency[leftIndex].push({ index: rightIndex, cost });
+      adjacency[rightIndex].push({ index: leftIndex, cost });
+    }
+  }
+
+  const startIndex = 0;
+  const openSet = new Set([startIndex]);
+  const cameFrom = new Map();
+  const gScore = new Map([[startIndex, 0]]);
+  const fScore = new Map([[startIndex, distanceBetween(nodes[startIndex], nodes[targetIndex])]]);
+
+  while (openSet.size > 0) {
+    let currentIndex = null;
+    let currentBestScore = Number.POSITIVE_INFINITY;
+
+    openSet.forEach((nodeIndex) => {
+      const nodeScore = fScore.get(nodeIndex) ?? Number.POSITIVE_INFINITY;
+      if (nodeScore < currentBestScore) {
+        currentBestScore = nodeScore;
+        currentIndex = nodeIndex;
+      }
+    });
+
+    if (currentIndex == null) {
+      break;
+    }
+
+    if (currentIndex === targetIndex) {
+      const path = [];
+      let walkIndex = currentIndex;
+
+      while (cameFrom.has(walkIndex)) {
+        path.unshift(nodes[walkIndex]);
+        walkIndex = cameFrom.get(walkIndex);
+      }
+
+      return compressAiRoute(worldState, start, path, padding);
+    }
+
+    openSet.delete(currentIndex);
+    const currentPathCost = gScore.get(currentIndex) ?? Number.POSITIVE_INFINITY;
+
+    adjacency[currentIndex].forEach((neighbor) => {
+      const tentativeScore = currentPathCost + neighbor.cost;
+      if (tentativeScore >= (gScore.get(neighbor.index) ?? Number.POSITIVE_INFINITY)) {
+        return;
+      }
+
+      cameFrom.set(neighbor.index, currentIndex);
+      gScore.set(neighbor.index, tentativeScore);
+      fScore.set(neighbor.index, tentativeScore + distanceBetween(nodes[neighbor.index], nodes[targetIndex]));
+      openSet.add(neighbor.index);
+    });
+  }
+
+  return [];
+}
+
+function getNearbyTowerElevator(worldState, position, maxDistance = TOWER_ELEVATOR_ACTION_RADIUS) {
+  const elevators = getHouseTowerElevators(worldState?.house);
+  const actorY = Number(position?.y) || 0;
+
+  for (let index = 0; index < elevators.length; index += 1) {
+    const elevator = elevators[index];
+    const planarDistance = distanceBetween(position, elevator);
+    const buttonDistance = distanceBetween(position, elevator.callButton);
+    const isNearLiftPlatform = planarDistance <= maxDistance;
+    const isNearCallButton = buttonDistance <= TOWER_ELEVATOR_BUTTON_ACTION_RADIUS;
+
+    if (Math.abs(actorY - elevator.bottomY) <= TOWER_ELEVATOR_VERTICAL_TOLERANCE && (isNearLiftPlatform || isNearCallButton)) {
+      return {
+        id: elevator.id,
+        direction: 'up',
+        source: isNearCallButton && !isNearLiftPlatform ? 'button' : 'platform',
+        position: {
+          x: elevator.x,
+          y: elevator.topY,
+          z: elevator.z,
+        },
+      };
+    }
+
+    if (Math.abs(actorY - elevator.topY) <= TOWER_ELEVATOR_VERTICAL_TOLERANCE && isNearLiftPlatform) {
+      return {
+        id: elevator.id,
+        direction: 'down',
+        source: 'platform',
+        position: {
+          x: elevator.x,
+          y: elevator.bottomY,
+          z: elevator.z,
+        },
+      };
+    }
+  }
+
+  return null;
+}
+
 function getClosestPointOnSegment(start, end, target) {
   const startX = Number(start?.x) || 0;
   const startZ = Number(start?.z) || 0;
@@ -382,6 +672,14 @@ function normalizeDecision(decision, observation) {
   }
 
   if (action !== 'move_to' && targetId) {
+    return null;
+  }
+
+  if (
+    action !== 'wait'
+    && action !== 'move_to'
+    && observation?.available_actions?.[action] !== true
+  ) {
     return null;
   }
 
@@ -555,9 +853,12 @@ function chooseExplorationTarget(observation, { excludeTargetIds = [] } = {}) {
 
 function buildInventory(actor) {
   return {
-    apples: actor.inventory.apples,
-    food: roundNumber(actor.inventory.food, 1),
-    water: roundNumber(actor.inventory.water, 1),
+    apples: Math.max(0, Math.trunc(actor.inventory?.apples || 0)),
+    arrows: Math.max(0, Math.trunc(actor.inventory?.arrows || 0)),
+    bowEquipped: Boolean(actor.inventory?.hasBow),
+    swordEquipped: Boolean(actor.inventory?.hasSword),
+    food: roundNumber(Number(actor.inventory?.food) || 0, 1),
+    water: roundNumber(Number(actor.inventory?.water) || 0, 1),
   };
 }
 
@@ -588,6 +889,9 @@ function createPlayerState(user, spawnPoint) {
     currentAction: 'wait',
     inventory: {
       apples: 0,
+      hasBow: false,
+      hasSword: false,
+      arrows: 0,
       food: MAX_FOOD,
       water: MAX_WATER,
     },
@@ -598,6 +902,9 @@ function createPlayerState(user, spawnPoint) {
     },
     speech: null,
     speechExpiresAt: 0,
+    hitFlashUntil: 0,
+    lastHitAt: 0,
+    lastHitType: null,
     actionCooldownUntil: 0,
     connectedAt: now,
     lastSeenAt: now,
@@ -644,6 +951,9 @@ class AiGameEngine {
       soccerLeaderboardRefreshInFlight: false,
       playerChat: [],
       nextDroppedAppleId: 1,
+      nextDroppedSwordId: 1,
+      nextDroppedBowId: 1,
+      nextArrowProjectileId: 1,
       ai: {
         id: 'npc-gardener-01',
         actorType: 'ai',
@@ -654,15 +964,25 @@ class AiGameEngine {
         status: 'idle',
         currentAction: 'wait',
         movementTargetId: null,
+        movementRoute: [],
+        movementRouteIndex: 0,
+        movementStuckTicks: 0,
+        movementReplanCount: 0,
         actionCooldownUntil: 0,
         inventory: {
           apples: 0,
+          hasBow: false,
+          hasSword: false,
+          arrows: 0,
           food: MAX_FOOD,
           water: MAX_WATER,
         },
         recentActions: [],
         speech: null,
         speechExpiresAt: 0,
+        hitFlashUntil: 0,
+        lastHitAt: 0,
+        lastHitType: null,
         score: 0,
         bestScore: 0,
         scoreProgress: 0,
@@ -800,6 +1120,13 @@ class AiGameEngine {
         food: roundNumber(actor.inventory.food, 1),
         water: roundNumber(actor.inventory.water, 1),
       },
+      hitFlashRemainingMs: Math.max(0, (Number(actor.hitFlashUntil) || 0) - now),
+      lastHitAt: Number(actor.lastHitAt) > 0 ? new Date(actor.lastHitAt).toISOString() : null,
+      lastHitType: typeof actor.lastHitType === 'string' ? actor.lastHitType : null,
+      equipment: {
+        bow: Boolean(actor.inventory?.hasBow),
+        sword: Boolean(actor.inventory?.hasSword),
+      },
       score: Math.max(0, Math.trunc(actor.score || 0)),
       bestScore: Math.max(0, Math.trunc(actor.bestScore || 0)),
       deaths: Math.max(0, Math.trunc(actor.deaths || 0)),
@@ -929,6 +1256,8 @@ class AiGameEngine {
     }
 
     this.clearSoccerBallPossessionIfHeldByActor(normalizedUserId);
+    this.dropSwordInventory(player);
+    this.dropBowInventory(player);
     this.state.players.delete(normalizedUserId);
     this.persistActorStats(player);
     this.logEvent(
@@ -1001,9 +1330,15 @@ class AiGameEngine {
     }
 
     const availableActions = this.getAvailableActions(player, now);
-    const selectedAction = availableActions.kick_ball
-      ? 'kick_ball'
-      : availableActions.drink_water
+    const selectedAction = availableActions.elevator_up || availableActions.elevator_down
+      ? 'ride_elevator'
+      : availableActions.attack_sword
+        ? 'attack_sword'
+      : availableActions.shoot_arrow
+        ? 'shoot_arrow'
+      : availableActions.kick_ball
+        ? 'kick_ball'
+        : availableActions.drink_water
         ? 'drink_water'
         : availableActions.eat_fruit
           ? 'eat_fruit'
@@ -1019,7 +1354,13 @@ class AiGameEngine {
 
     const logContext = buildPlayerLogContext(player);
 
-    if (selectedAction === 'kick_ball') {
+    if (selectedAction === 'ride_elevator') {
+      this.performTowerElevatorRide(player, 'player_use_tower_elevator', logContext);
+    } else if (selectedAction === 'attack_sword') {
+      this.performSwordAttack(player, 'player_attack_sword', logContext);
+    } else if (selectedAction === 'shoot_arrow') {
+      this.performShootArrow(player, 'player_shoot_arrow', logContext);
+    } else if (selectedAction === 'kick_ball') {
       this.performKickBall(player, 'player_kick_ball', logContext);
     } else if (selectedAction === 'drink_water') {
       this.performDrink(player, 'player_drink_water', logContext);
@@ -1030,6 +1371,8 @@ class AiGameEngine {
     return {
       ok: true,
       action: selectedAction,
+      position: buildRoundedPosition(player.position),
+      rotationY: roundNumber(player.rotationY, 3),
     };
   }
 
@@ -1053,8 +1396,16 @@ class AiGameEngine {
     }
 
     const availableActions = this.getAvailableActions(player, now, { includeDrop: true });
-    const selectedAction = availableActions.drop_fruit
+    const selectedAction = availableActions.drop_sword
+      ? 'drop_sword'
+      : availableActions.drop_bow
+      ? 'drop_bow'
+      : availableActions.drop_fruit
       ? 'drop_fruit'
+      : availableActions.pick_sword
+        ? 'pick_sword'
+      : availableActions.pick_bow
+        ? 'pick_bow'
       : availableActions.pick_fruit
         ? 'pick_fruit'
         : null;
@@ -1063,14 +1414,22 @@ class AiGameEngine {
       return {
         ok: true,
         ignored: true,
-        ignoredReason: 'no_fruit_action_available',
+        ignoredReason: 'no_toggle_action_available',
       };
     }
 
     const logContext = buildPlayerLogContext(player);
 
-    if (selectedAction === 'drop_fruit') {
+    if (selectedAction === 'drop_sword') {
+      this.performDropSword(player, 'player_drop_sword', logContext);
+    } else if (selectedAction === 'drop_bow') {
+      this.performDropBow(player, 'player_drop_bow', logContext);
+    } else if (selectedAction === 'drop_fruit') {
       this.performDropFruit(player, 'player_drop_fruit', logContext);
+    } else if (selectedAction === 'pick_sword') {
+      this.performPickSword(player, 'player_pick_sword', logContext);
+    } else if (selectedAction === 'pick_bow') {
+      this.performPickBow(player, 'player_pick_bow', logContext);
     } else {
       this.performPickFruit(player, 'player_pick_fruit', logContext);
     }
@@ -1265,9 +1624,75 @@ class AiGameEngine {
     }
 
     this.advanceSoccerBall(deltaSeconds, now);
+    this.advanceArrowProjectiles(deltaSeconds, now);
     this.advanceTreeRegrowth(now);
     this.cleanupExpiredGraves(now);
     this.cleanupInactivePlayers(now);
+    this.advanceElevators(deltaSeconds, now);
+  }
+
+  advanceElevators(deltaSeconds, now) {
+    if (!Array.isArray(this.state.world.elevators)) return;
+
+    const elevators = this.state.world.elevators;
+    const layout = getHouseTowerElevators(this.state.world.house);
+    const speed = 10.0;
+
+    for (let index = 0; index < elevators.length; index += 1) {
+      const e = elevators[index];
+      const eLayout = layout.find((l) => l.id === e.id);
+      if (!eLayout) continue;
+
+      let targetY = e.y;
+      let diffY = 0;
+
+      if (e.state === 'going_down') {
+        e.y -= speed * deltaSeconds;
+        if (e.y <= eLayout.bottomY) {
+          e.y = eLayout.bottomY;
+          e.state = 'idle_bottom';
+          e.timer = now + 2000;
+        }
+        diffY = e.y - targetY;
+      } else if (e.state === 'idle_bottom') {
+        if (now >= e.timer) {
+          e.state = 'going_up';
+        }
+      } else if (e.state === 'going_up') {
+        e.y += speed * deltaSeconds;
+        if (e.y >= eLayout.topY) {
+          e.y = eLayout.topY;
+          e.state = 'idle_top';
+        }
+        diffY = e.y - targetY;
+      }
+
+      if (diffY !== 0) {
+        const moveActor = (actor) => {
+          if (!actor || actor.status === 'dead') return;
+          // Check if they are standing on the elevator top surface
+          if (
+            actor.position.x >= eLayout.topSurface.minX - 0.1 &&
+            actor.position.x <= eLayout.topSurface.maxX + 0.1 &&
+            actor.position.z >= eLayout.topSurface.minZ - 0.1 &&
+            actor.position.z <= eLayout.topSurface.maxZ + 0.1
+          ) {
+            // Check if they are physically near the platform height
+            if (Math.abs(actor.position.y - targetY) < 1.0) {
+              actor.position.y = Math.max(0, actor.position.y + diffY);
+              // Also sync their walkable position just in case
+              const resolved = resolveWalkablePosition(this.state.world, actor.position, actor.position);
+              actor.position.y = resolved.y;
+            }
+          }
+        };
+
+        moveActor(this.state.ai);
+        for (const player of this.state.players.values()) {
+          moveActor(player);
+        }
+      }
+    }
   }
 
   advanceActorVitals(actor, deltaSeconds, now) {
@@ -1354,6 +1779,9 @@ class AiGameEngine {
       this.state.nextDecisionAt = actor.respawnAt;
     }
 
+    this.dropSwordInventory(actor);
+    this.dropBowInventory(actor);
+
     this.state.world.graves.push({
       id: `grave-${actor.actorType}-${actor.id}-${now}`,
       actorId: actor.id,
@@ -1396,10 +1824,16 @@ class AiGameEngine {
     actor.actionCooldownUntil = 0;
     actor.respawnAt = 0;
     actor.inventory.apples = 0;
+    actor.inventory.hasSword = false;
+    actor.inventory.hasBow = false;
+    actor.inventory.arrows = 0;
     actor.inventory.food = MAX_FOOD;
     actor.inventory.water = MAX_WATER;
     actor.speech = null;
     actor.speechExpiresAt = 0;
+    actor.hitFlashUntil = 0;
+    actor.lastHitAt = 0;
+    actor.lastHitType = null;
     actor.scoreProgress = 0;
     actor.scoreDirection = 0;
     actor.lastDeathReason = null;
@@ -1473,6 +1907,7 @@ class AiGameEngine {
         PLAYER_COLLISION_RADIUS
       );
       player.position.x = nextPosition.x;
+      player.position.y = nextPosition.y;
       player.position.z = nextPosition.z;
       player.rotationY = Math.atan2(directionX, directionZ);
       player.status = 'moving';
@@ -1517,6 +1952,64 @@ class AiGameEngine {
     });
   }
 
+  planAiRoute(target, { resetReplanCount = false } = {}) {
+    if (!target?.position) {
+      return false;
+    }
+
+    const route = computeAiRoute(
+      this.state.world,
+      this.state.ai.position,
+      target.position,
+      PLAYER_COLLISION_RADIUS
+    );
+
+    this.state.ai.movementRoute = route;
+    this.state.ai.movementRouteIndex = 0;
+    this.state.ai.movementStuckTicks = 0;
+
+    if (resetReplanCount) {
+      this.state.ai.movementReplanCount = 0;
+    }
+
+    return route.length > 0;
+  }
+
+  replanAiRoute(target, now) {
+    if (!target?.position) {
+      return false;
+    }
+
+    this.state.ai.movementReplanCount += 1;
+    if (this.state.ai.movementReplanCount > AI_ROUTE_REPLAN_LIMIT) {
+      this.logEvent('ai_route_failed', {
+        details: `target=${target.id}; reason=max_replans`,
+      });
+      this.state.ai.status = 'idle';
+      this.state.ai.currentAction = 'wait';
+      this.state.nextDecisionAt = now + 350;
+      this.clearMovement();
+      return false;
+    }
+
+    const planned = this.planAiRoute(target);
+    if (!planned) {
+      this.logEvent('ai_route_failed', {
+        details: `target=${target.id}; reason=no_path; attempt=${this.state.ai.movementReplanCount}`,
+      });
+      this.state.ai.status = 'idle';
+      this.state.ai.currentAction = 'wait';
+      this.state.nextDecisionAt = now + 350;
+      this.clearMovement();
+      return false;
+    }
+
+    this.logEvent('ai_route_replanned', {
+      details: `target=${target.id}; attempt=${this.state.ai.movementReplanCount}; waypoints=${this.state.ai.movementRoute.length}`,
+    });
+    return true;
+  }
+
   advanceAiMovement(deltaSeconds, now) {
     if (this.state.ai.status === 'dead') {
       return;
@@ -1540,8 +2033,15 @@ class AiGameEngine {
 
     const distance = distanceBetween(this.state.ai.position, target.position);
     if (distance <= ARRIVAL_RADIUS) {
-      this.state.ai.position.x = target.position.x;
-      this.state.ai.position.z = target.position.z;
+      const resolvedTargetPosition = resolveWalkablePosition(
+        this.state.world,
+        this.state.ai.position,
+        target.position,
+        PLAYER_COLLISION_RADIUS
+      );
+      this.state.ai.position.x = resolvedTargetPosition.x;
+      this.state.ai.position.y = resolvedTargetPosition.y;
+      this.state.ai.position.z = resolvedTargetPosition.z;
       this.state.ai.status = 'idle';
       this.state.ai.currentAction = 'wait';
       this.state.nextDecisionAt = now + 200;
@@ -1550,9 +2050,44 @@ class AiGameEngine {
       return;
     }
 
-    const step = Math.min(config.AI_MOVE_SPEED * deltaSeconds, distance);
-    const directionX = (target.position.x - this.state.ai.position.x) / distance;
-    const directionZ = (target.position.z - this.state.ai.position.z) / distance;
+    if (
+      !Array.isArray(this.state.ai.movementRoute)
+      || this.state.ai.movementRoute.length === 0
+      || this.state.ai.movementRouteIndex >= this.state.ai.movementRoute.length
+    ) {
+      const planned = this.planAiRoute(target, { resetReplanCount: false });
+      if (!planned) {
+        this.logEvent('ai_route_failed', {
+          details: `target=${target.id}; reason=no_initial_path`,
+        });
+        this.state.ai.status = 'idle';
+        this.state.ai.currentAction = 'wait';
+        this.state.nextDecisionAt = now + 350;
+        this.clearMovement();
+        return;
+      }
+    }
+
+    while (this.state.ai.movementRouteIndex < this.state.ai.movementRoute.length) {
+      const waypoint = this.state.ai.movementRoute[this.state.ai.movementRouteIndex];
+      if (distanceBetween(this.state.ai.position, waypoint) > AI_ROUTE_WAYPOINT_RADIUS) {
+        break;
+      }
+
+      this.state.ai.movementRouteIndex += 1;
+    }
+
+    const movementGoal = this.state.ai.movementRoute[this.state.ai.movementRouteIndex] || target.position;
+    const goalDistance = distanceBetween(this.state.ai.position, movementGoal);
+    if (goalDistance <= 0.0001) {
+      this.state.ai.movementRouteIndex += 1;
+      return;
+    }
+
+    const step = Math.min(config.AI_MOVE_SPEED * deltaSeconds, goalDistance);
+    const directionX = (movementGoal.x - this.state.ai.position.x) / goalDistance;
+    const directionZ = (movementGoal.z - this.state.ai.position.z) / goalDistance;
+    const previousPosition = clonePoint(this.state.ai.position);
     const nextPosition = resolveWalkablePosition(
       this.state.world,
       this.state.ai.position,
@@ -1563,11 +2098,41 @@ class AiGameEngine {
       },
       PLAYER_COLLISION_RADIUS
     );
+
+    const movedDistance = distanceBetween(previousPosition, nextPosition);
+    if (movedDistance <= AI_ROUTE_STUCK_DISTANCE) {
+      this.state.ai.movementStuckTicks += 1;
+
+      if (this.state.ai.movementStuckTicks >= AI_ROUTE_REPLAN_TICKS) {
+        this.replanAiRoute(target, now);
+      }
+      return;
+    }
+
+    this.state.ai.movementStuckTicks = 0;
     this.state.ai.position.x = nextPosition.x;
+    this.state.ai.position.y = nextPosition.y;
     this.state.ai.position.z = nextPosition.z;
     this.state.ai.rotationY = Math.atan2(directionX, directionZ);
     this.state.ai.status = 'moving';
     this.state.ai.currentAction = 'move_to';
+
+    if (distanceBetween(this.state.ai.position, movementGoal) <= AI_ROUTE_WAYPOINT_RADIUS) {
+      this.state.ai.movementRouteIndex += 1;
+    }
+  }
+
+  isAiCompletingDecision(now) {
+    if (this.state.ai.currentAction === 'move_to' && this.state.ai.movementTargetId) {
+      return true;
+    }
+
+    const actionRequiresCooldownCompletion =
+      this.state.ai.currentAction === 'drink_water'
+      || this.state.ai.currentAction === 'pick_fruit'
+      || this.state.ai.currentAction === 'eat_fruit';
+
+    return actionRequiresCooldownCompletion && now < this.state.ai.actionCooldownUntil;
   }
 
   async maybeRequestDecision() {
@@ -1578,6 +2143,10 @@ class AiGameEngine {
     const now = Date.now();
     if (this.state.ai.status === 'dead') {
       this.state.nextDecisionAt = Math.max(this.state.nextDecisionAt, this.state.ai.respawnAt || (now + 500));
+      return;
+    }
+
+    if (this.isAiCompletingDecision(now)) {
       return;
     }
 
@@ -1701,13 +2270,35 @@ class AiGameEngine {
     }
 
     switch (decision.action) {
-      case 'move_to':
+      case 'move_to': {
+        const target = getTargetById(this.state.world, decision.targetId);
+        if (!target) {
+          this.state.ai.status = 'idle';
+          this.state.ai.currentAction = 'wait';
+          this.clearMovement();
+          return;
+        }
+
         this.state.ai.movementTargetId = decision.targetId;
+        this.state.ai.movementReplanCount = 0;
+        const planned = this.planAiRoute(target, { resetReplanCount: true });
+        if (!planned) {
+          this.logEvent('ai_route_failed', {
+            details: `target=${decision.targetId}; reason=no_path_on_decision`,
+          });
+          this.state.ai.status = 'idle';
+          this.state.ai.currentAction = 'wait';
+          this.state.nextDecisionAt = now + 350;
+          this.clearMovement();
+          return;
+        }
+
         this.state.ai.status = 'moving';
         this.state.ai.currentAction = 'move_to';
         this.rememberAiAction('move_to', decision.targetId);
         this.logEvent('ai_move_to_target');
         return;
+      }
       case 'drink_water':
         this.performDrink(this.state.ai, 'ai_drink_water', {
           userId: this.state.ai.id,
@@ -1765,6 +2356,75 @@ class AiGameEngine {
     this.awardActorScore(actor, DRINK_SCORE_POINTS);
     this.logEvent(eventName, logContext);
     return true;
+  }
+
+  performTowerElevatorRide(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    const nearbyElevator = getNearbyTowerElevator(this.state.world, actor.position);
+    if (!nearbyElevator) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const e = this.state.world.elevators.find((e) => e.id === nearbyElevator.id);
+    if (e && e.state === 'idle_top') {
+      e.state = 'going_down';
+    }
+
+    actor.status = 'acting';
+    actor.currentAction = 'ride_elevator';
+    actor.actionCooldownUntil = Date.now() + TOWER_ELEVATOR_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `tower=${nearbyElevator.id}; triggered=true`,
+    }));
+    return true;
+  }
+
+  getNearbyBowPickup(position, maxDistance = BOW_PICKUP_RADIUS) {
+    const bows = Array.isArray(this.state.world?.bows)
+      ? this.state.world.bows
+      : [];
+    let closestBow = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+
+    bows.forEach((bow) => {
+      const distance = distanceBetween(position, bow.position);
+      if (distance < maxDistance && distance < closestDistance) {
+        closestBow = bow;
+        closestDistance = distance;
+      }
+    });
+
+    return closestBow;
+  }
+
+  getNearbySwordPickup(position, maxDistance = SWORD_PICKUP_RADIUS) {
+    const swords = Array.isArray(this.state.world?.swords)
+      ? this.state.world.swords
+      : [];
+    let closestSword = null;
+    let closestDistance = Number.POSITIVE_INFINITY;
+
+    swords.forEach((sword) => {
+      const distance = distanceBetween(position, sword.position);
+      if (distance < maxDistance && distance < closestDistance) {
+        closestSword = sword;
+        closestDistance = distance;
+      }
+    });
+
+    return closestSword;
   }
 
   getNearbyDroppedApple(position, maxDistance = DROPPED_APPLE_PICKUP_RADIUS) {
@@ -1827,6 +2487,566 @@ class AiGameEngine {
       y: DROPPED_APPLE_GROUND_Y,
       z: resolvedPosition.z,
     };
+  }
+
+  buildDroppedBowPosition(actor) {
+    const rotationY = Number(actor?.rotationY) || 0;
+    const desiredPosition = {
+      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * BOW_DROP_DISTANCE),
+      y: Number(actor?.position?.y) || 0,
+      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * BOW_DROP_DISTANCE),
+    };
+    const resolvedPosition = resolveWalkablePosition(
+      this.state.world,
+      actor.position,
+      desiredPosition,
+      0.2
+    );
+
+    return {
+      x: resolvedPosition.x,
+      y: resolvedPosition.y + BOW_GROUND_OFFSET_Y,
+      z: resolvedPosition.z,
+    };
+  }
+
+  buildDroppedSwordPosition(actor) {
+    const rotationY = Number(actor?.rotationY) || 0;
+    const desiredPosition = {
+      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * SWORD_DROP_DISTANCE),
+      y: Number(actor?.position?.y) || 0,
+      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * SWORD_DROP_DISTANCE),
+    };
+    const resolvedPosition = resolveWalkablePosition(
+      this.state.world,
+      actor.position,
+      desiredPosition,
+      0.2
+    );
+
+    return {
+      x: resolvedPosition.x,
+      y: resolvedPosition.y + SWORD_GROUND_OFFSET_Y,
+      z: resolvedPosition.z,
+    };
+  }
+
+  dropSwordInventory(actor) {
+    if (!actor?.inventory?.hasSword) {
+      return null;
+    }
+
+    const droppedSword = {
+      id: `dropped-sword-${this.state.nextDroppedSwordId}`,
+      position: this.buildDroppedSwordPosition(actor),
+    };
+
+    this.state.nextDroppedSwordId += 1;
+    this.state.world.swords.push(droppedSword);
+    actor.inventory.hasSword = false;
+    return droppedSword;
+  }
+
+  dropBowInventory(actor) {
+    if (!actor?.inventory?.hasBow) {
+      return null;
+    }
+
+    const storedArrows = Math.max(0, Math.trunc(Number(actor.inventory.arrows) || 0));
+    const droppedBow = {
+      id: `dropped-bow-${this.state.nextDroppedBowId}`,
+      position: this.buildDroppedBowPosition(actor),
+      arrowsRemaining: storedArrows > 0 ? storedArrows : BOW_DEFAULT_ARROW_COUNT,
+    };
+
+    this.state.nextDroppedBowId += 1;
+    this.state.world.bows.push(droppedBow);
+    actor.inventory.hasBow = false;
+    actor.inventory.arrows = 0;
+    return droppedBow;
+  }
+
+  performPickSword(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (actor.inventory?.hasSword || actor.inventory?.hasBow || (Number(actor.inventory?.apples) || 0) > 0) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const nearbySword = this.getNearbySwordPickup(actor.position);
+    if (!nearbySword) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    this.state.world.swords = (this.state.world.swords || [])
+      .filter((sword) => sword.id !== nearbySword.id);
+    actor.inventory.hasSword = true;
+    actor.status = 'acting';
+    actor.currentAction = 'pick_sword';
+    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `sword=${nearbySword.id}`,
+    }));
+    return true;
+  }
+
+  performDropSword(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (!actor.inventory?.hasSword) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const droppedSword = this.dropSwordInventory(actor);
+    if (!droppedSword) {
+      return false;
+    }
+
+    actor.status = 'acting';
+    actor.currentAction = 'drop_sword';
+    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `sword=${droppedSword.id}`,
+    }));
+    return true;
+  }
+
+  getSwordAttackTarget(actor) {
+    if (!actor || actor.status === 'dead' || !actor.inventory?.hasSword) {
+      return null;
+    }
+
+    const forwardX = Math.sin(Number(actor.rotationY) || 0);
+    const forwardZ = Math.cos(Number(actor.rotationY) || 0);
+    const candidates = [];
+    const pushCandidate = (target) => {
+      if (!target || target.id === actor.id || target.status === 'dead') {
+        return;
+      }
+
+      const verticalDelta = Math.abs((Number(target.position?.y) || 0) - (Number(actor.position?.y) || 0));
+      if (verticalDelta > SWORD_ATTACK_VERTICAL_TOLERANCE) {
+        return;
+      }
+
+      const deltaX = (Number(target.position?.x) || 0) - (Number(actor.position?.x) || 0);
+      const deltaZ = (Number(target.position?.z) || 0) - (Number(actor.position?.z) || 0);
+      const distance = Math.sqrt((deltaX * deltaX) + (deltaZ * deltaZ));
+      if (distance <= 0.001 || distance > SWORD_ATTACK_RADIUS) {
+        return;
+      }
+
+      const directionX = deltaX / distance;
+      const directionZ = deltaZ / distance;
+      const facingDot = (forwardX * directionX) + (forwardZ * directionZ);
+      if (facingDot < SWORD_ATTACK_ARC_DOT_THRESHOLD) {
+        return;
+      }
+
+      if (!isRouteSegmentClear(this.state.world, actor.position, target.position, SWORD_ATTACK_LINE_PADDING)) {
+        return;
+      }
+
+      candidates.push({ target, distance, facingDot });
+    };
+
+    pushCandidate(this.state.ai);
+    this.state.players.forEach((player) => {
+      pushCandidate(player);
+    });
+
+    candidates.sort((left, right) => {
+      if (left.distance !== right.distance) {
+        return left.distance - right.distance;
+      }
+
+      return right.facingDot - left.facingDot;
+    });
+
+    return candidates[0]?.target || null;
+  }
+
+  applyHitResourceLoss(target, {
+    hitType = 'impact',
+    appleDamage = 0,
+    waterDamage = 0,
+    now = Date.now(),
+  } = {}) {
+    if (!target || target.status === 'dead') {
+      return {
+        applesLost: 0,
+        waterLost: 0,
+      };
+    }
+
+    const previousApples = Math.max(0, Math.trunc(Number(target.inventory?.apples) || 0));
+    const previousWater = clamp(Number(target.inventory?.water) || 0, 0, MAX_WATER);
+    const applesLost = Math.min(previousApples, Math.max(0, Math.trunc(Number(appleDamage) || 0)));
+    const waterLost = Math.min(previousWater, Math.max(0, Number(waterDamage) || 0));
+
+    target.inventory.apples = previousApples - applesLost;
+    target.inventory.water = clamp(previousWater - waterLost, 0, MAX_WATER);
+    target.hitFlashUntil = now + ACTOR_HIT_FLASH_DURATION_MS;
+    target.lastHitAt = now;
+    target.lastHitType = hitType;
+
+    return {
+      applesLost,
+      waterLost,
+    };
+  }
+
+  applyActorKnockback(target, sourceRotationY, distance = SWORD_KNOCKBACK_DISTANCE) {
+    if (!target || target.status === 'dead') {
+      return false;
+    }
+
+    const totalDistance = Math.max(0, Number(distance) || 0);
+    if (totalDistance <= 0.001) {
+      return false;
+    }
+
+    const directionX = Math.sin(Number(sourceRotationY) || 0);
+    const directionZ = Math.cos(Number(sourceRotationY) || 0);
+    const stepDistance = Math.max(0.12, Number(SWORD_KNOCKBACK_STEP_DISTANCE) || 0.45);
+    const steps = Math.max(1, Math.ceil(totalDistance / stepDistance));
+    let currentPosition = clonePoint(target.position);
+    let movedAny = false;
+
+    for (let index = 0; index < steps; index += 1) {
+      const remainingDistance = totalDistance - (index * stepDistance);
+      const currentStepDistance = Math.min(stepDistance, remainingDistance);
+      if (currentStepDistance <= 0.0001) {
+        break;
+      }
+
+      const resolvedPosition = resolveWalkablePosition(
+        this.state.world,
+        currentPosition,
+        {
+          x: currentPosition.x + (directionX * currentStepDistance),
+          y: currentPosition.y,
+          z: currentPosition.z + (directionZ * currentStepDistance),
+        },
+        PLAYER_COLLISION_RADIUS
+      );
+
+      if (distanceBetween(currentPosition, resolvedPosition) <= 0.01) {
+        break;
+      }
+
+      currentPosition = resolvedPosition;
+      movedAny = true;
+    }
+
+    target.position.x = currentPosition.x;
+    target.position.y = currentPosition.y;
+    target.position.z = currentPosition.z;
+    return movedAny;
+  }
+
+  performSwordAttack(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (!actor.inventory?.hasSword) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const now = Date.now();
+    const target = this.getSwordAttackTarget(actor);
+    actor.status = 'acting';
+    actor.currentAction = 'attack_sword';
+    actor.actionCooldownUntil = now + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    if (!target) {
+      this.logEvent(eventName, buildPlayerLogContext(actor, {
+        userAgent: logContext?.userAgent || 'backend-game',
+        details: 'result="miss"; target_id="-"; target_name="-"',
+      }));
+      return true;
+    }
+
+    const { applesLost, waterLost } = this.applyHitResourceLoss(target, {
+      hitType: 'sword',
+      appleDamage: SWORD_HIT_APPLE_DAMAGE,
+      waterDamage: SWORD_HIT_WATER_DAMAGE,
+      now,
+    });
+    this.applyActorKnockback(target, actor.rotationY, SWORD_KNOCKBACK_DISTANCE);
+
+    if (target === this.state.ai) {
+      this.clearMovement();
+      this.state.ai.status = 'idle';
+      this.state.ai.currentAction = 'wait';
+      this.state.nextDecisionAt = Math.max(this.state.nextDecisionAt, now + 500);
+    }
+
+    if (target.actorType === 'ai') {
+      this.logEvent('ai_hit_by_sword', {
+        userId: target.id,
+        userName: target.name,
+        userAgent: 'backend-ai',
+        details: `attacker_id=${formatLogDetailValue(actor.id)}; attacker_name=${formatLogDetailValue(actor.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
+      });
+    } else {
+      this.logEvent('player_hit_by_sword', buildPlayerLogContext(target, {
+        details: `attacker_id=${formatLogDetailValue(actor.id)}; attacker_name=${formatLogDetailValue(actor.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
+      }));
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `target_id=${formatLogDetailValue(target.id)}; target_name=${formatLogDetailValue(target.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
+    }));
+    return true;
+  }
+
+  performPickBow(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (actor.inventory?.hasBow || actor.inventory?.hasSword || (Number(actor.inventory?.apples) || 0) > 0) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const nearbyBow = this.getNearbyBowPickup(actor.position);
+    if (!nearbyBow) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    this.state.world.bows = (this.state.world.bows || [])
+      .filter((bow) => bow.id !== nearbyBow.id);
+    actor.inventory.hasBow = true;
+    actor.inventory.arrows = Math.max(1, Math.trunc(Number(nearbyBow.arrowsRemaining) || BOW_DEFAULT_ARROW_COUNT));
+    actor.status = 'acting';
+    actor.currentAction = 'pick_bow';
+    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `bow=${nearbyBow.id}; arrows=${actor.inventory.arrows}`,
+    }));
+    return true;
+  }
+
+  performDropBow(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (!actor.inventory?.hasBow) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const droppedBow = this.dropBowInventory(actor);
+    if (!droppedBow) {
+      return false;
+    }
+
+    actor.status = 'acting';
+    actor.currentAction = 'drop_bow';
+    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `bow=${droppedBow.id}; arrows=${droppedBow.arrowsRemaining}`,
+    }));
+    return true;
+  }
+
+  performShootArrow(actor, eventName, logContext, { clearMovement = false } = {}) {
+    if (!actor || actor.status === 'dead') {
+      return false;
+    }
+
+    if (!actor.inventory?.hasBow || (Number(actor.inventory?.arrows) || 0) <= 0) {
+      if (actor === this.state.ai) {
+        this.state.nextDecisionAt = Date.now() + 500;
+      }
+      return false;
+    }
+
+    const rotationY = Number(actor.rotationY) || 0;
+    const directionX = Math.sin(rotationY);
+    const directionZ = Math.cos(rotationY);
+    const now = Date.now();
+
+    this.state.world.arrows.push({
+      id: `arrow-${this.state.nextArrowProjectileId}`,
+      ownerActorId: actor.id,
+      position: {
+        x: (Number(actor.position?.x) || 0) + (directionX * ARROW_FORWARD_OFFSET),
+        y: (Number(actor.position?.y) || 0) + ARROW_START_HEIGHT,
+        z: (Number(actor.position?.z) || 0) + (directionZ * ARROW_FORWARD_OFFSET),
+      },
+      velocity: {
+        x: directionX * ARROW_PROJECTILE_SPEED,
+        y: 0,
+        z: directionZ * ARROW_PROJECTILE_SPEED,
+      },
+      rotationY,
+      expiresAt: now + ARROW_PROJECTILE_LIFETIME_MS,
+    });
+    this.state.nextArrowProjectileId += 1;
+    actor.inventory.arrows = Math.max(0, Math.trunc(Number(actor.inventory.arrows) || 0) - 1);
+    actor.status = 'acting';
+    actor.currentAction = 'shoot_arrow';
+    actor.actionCooldownUntil = now + ACTION_COOLDOWN_MS;
+
+    if (clearMovement) {
+      this.clearMovement();
+    }
+
+    this.logEvent(eventName, buildPlayerLogContext(actor, {
+      userAgent: logContext?.userAgent || 'backend-game',
+      details: `arrows_remaining=${actor.inventory.arrows}; rotation_y=${roundNumber(rotationY, 3)}`,
+    }));
+    return true;
+  }
+
+  getArrowHitTarget(ownerActorId, startPosition, endPosition) {
+    const normalizedOwnerActorId = sanitizeText(ownerActorId, 128);
+    const hitRadiusSquared = ARROW_HIT_RADIUS * ARROW_HIT_RADIUS;
+    const startY = Number(startPosition?.y) || 0;
+    const endY = Number(endPosition?.y) || 0;
+    let bestCandidate = null;
+
+    const considerActor = (actor) => {
+      if (!actor || actor.status === 'dead' || actor.id === normalizedOwnerActorId) {
+        return;
+      }
+
+      const closestPoint = getClosestPointOnSegment(startPosition, endPosition, actor.position);
+      const actorPositionX = Number(actor.position?.x) || 0;
+      const actorPositionZ = Number(actor.position?.z) || 0;
+      const deltaX = actorPositionX - closestPoint.x;
+      const deltaZ = actorPositionZ - closestPoint.z;
+      const planarDistanceSquared = (deltaX * deltaX) + (deltaZ * deltaZ);
+      if (planarDistanceSquared > hitRadiusSquared) {
+        return;
+      }
+
+      const arrowY = startY + ((endY - startY) * closestPoint.progress);
+      const actorBaseY = Number(actor.position?.y) || 0;
+      if (
+        arrowY < (actorBaseY + ARROW_HIT_MIN_Y_OFFSET)
+        || arrowY > (actorBaseY + ARROW_HIT_MAX_Y_OFFSET)
+      ) {
+        return;
+      }
+
+      if (
+        bestCandidate
+        && closestPoint.progress > bestCandidate.progress + 0.0001
+      ) {
+        return;
+      }
+
+      if (
+        bestCandidate
+        && Math.abs(closestPoint.progress - bestCandidate.progress) <= 0.0001
+        && planarDistanceSquared >= bestCandidate.planarDistanceSquared
+      ) {
+        return;
+      }
+
+      bestCandidate = {
+        actor,
+        progress: closestPoint.progress,
+        planarDistanceSquared,
+      };
+    };
+
+    considerActor(this.state.ai);
+    this.state.players.forEach((player) => {
+      considerActor(player);
+    });
+
+    return bestCandidate?.actor || null;
+  }
+
+  applyArrowHit(target, arrow, now) {
+    if (!target || target.status === 'dead') {
+      return false;
+    }
+
+    const { applesLost, waterLost } = this.applyHitResourceLoss(target, {
+      hitType: 'arrow',
+      appleDamage: ARROW_APPLE_DAMAGE,
+      waterDamage: ARROW_WATER_DAMAGE,
+      now,
+    });
+
+    const shooter = this.getActorById(arrow?.ownerActorId);
+    const shooterName = shooter?.name || 'Alguem';
+    const shooterId = shooter?.id || sanitizeText(arrow?.ownerActorId, 128) || 'unknown';
+
+    if (target.actorType === 'ai') {
+      this.logEvent('ai_hit_by_arrow', {
+        userId: target.id,
+        userName: target.name,
+        userAgent: 'backend-ai',
+        details: `shooter_id=${formatLogDetailValue(shooterId)}; shooter_name=${formatLogDetailValue(shooterName)}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
+      });
+    } else {
+      this.logEvent('player_hit_by_arrow', buildPlayerLogContext(target, {
+        details: `shooter_id=${formatLogDetailValue(shooterId)}; shooter_name=${formatLogDetailValue(shooterName)}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
+      }));
+    }
+
+    return true;
   }
 
   performPickFruit(actor, eventName, logContext, { clearMovement = false } = {}) {
@@ -1943,26 +3163,61 @@ class AiGameEngine {
   getAvailableActions(actor, now, { includeDrop = false } = {}) {
     if (!actor || actor.status === 'dead') {
       return {
+        elevator_up: false,
+        elevator_down: false,
+        attack_sword: false,
+        shoot_arrow: false,
         kick_ball: false,
         drink_water: false,
+        pick_sword: false,
+        pick_bow: false,
         pick_fruit: false,
         eat_fruit: false,
-        ...(includeDrop ? { drop_fruit: false } : {}),
+        ...(includeDrop ? { drop_sword: false, drop_bow: false, drop_fruit: false } : {}),
       };
     }
 
     const hasHeldFruit = (Number(actor.inventory?.apples) || 0) > 0;
+    const hasHeldSword = Boolean(actor.inventory?.hasSword);
+    const hasHeldBow = Boolean(actor.inventory?.hasBow);
+    const heldArrows = Math.max(0, Math.trunc(Number(actor.inventory?.arrows) || 0));
     const canActNow = now >= actor.actionCooldownUntil;
-    const canPickFruit = !hasHeldFruit && Boolean(this.getNearbyFruitPickupSource(actor.position));
-
+    const weaponInteractionsEnabled = actor.actorType !== 'ai';
+    const canPickSword = weaponInteractionsEnabled
+      && !hasHeldSword
+      && !hasHeldBow
+      && !hasHeldFruit
+      && Boolean(this.getNearbySwordPickup(actor.position));
+    const canPickBow = weaponInteractionsEnabled
+      && !hasHeldSword
+      && !hasHeldBow
+      && !hasHeldFruit
+      && Boolean(this.getNearbyBowPickup(actor.position));
+    const canPickFruit = !hasHeldFruit
+      && !hasHeldSword
+      && !hasHeldBow
+      && Boolean(this.getNearbyFruitPickupSource(actor.position));
+    const nearbyElevator = getNearbyTowerElevator(this.state.world, actor.position);
     return {
-      kick_ball: !this.isSoccerRestartPaused(now)
+      elevator_up: nearbyElevator?.direction === 'up' && canActNow,
+      elevator_down: nearbyElevator?.direction === 'down' && canActNow,
+      attack_sword: weaponInteractionsEnabled && hasHeldSword && canActNow,
+      shoot_arrow: weaponInteractionsEnabled && hasHeldBow && heldArrows > 0 && canActNow,
+      kick_ball: !hasHeldSword
+        && !hasHeldBow
+        && !this.isSoccerRestartPaused(now)
         && this.isNearSoccerBall(actor.position)
         && canActNow,
-      drink_water: this.isNearLake(actor.position) && canActNow,
+      drink_water: !hasHeldSword && !hasHeldBow && this.isNearLake(actor.position) && canActNow,
+      pick_sword: canPickSword && canActNow,
+      pick_bow: canPickBow && canActNow,
       pick_fruit: canPickFruit && canActNow,
-      eat_fruit: hasHeldFruit && canActNow,
-      ...(includeDrop ? { drop_fruit: hasHeldFruit && canActNow } : {}),
+      eat_fruit: !hasHeldSword && !hasHeldBow && hasHeldFruit && canActNow,
+      ...(includeDrop ? {
+        drop_sword: weaponInteractionsEnabled && hasHeldSword && canActNow,
+        drop_bow: weaponInteractionsEnabled && hasHeldBow && canActNow,
+        drop_fruit: hasHeldFruit && canActNow,
+      } : {}),
     };
   }
 
@@ -2358,6 +3613,48 @@ class AiGameEngine {
     this.tryMagnetizeSoccerBallToNearbyPlayer();
   }
 
+  advanceArrowProjectiles(deltaSeconds, now) {
+    if (!Array.isArray(this.state.world?.arrows) || this.state.world.arrows.length === 0) {
+      return;
+    }
+
+    const nextArrows = [];
+
+    this.state.world.arrows.forEach((arrow) => {
+      if (!arrow || now >= (Number(arrow.expiresAt) || 0)) {
+        return;
+      }
+
+      const previousPosition = clonePoint(arrow.position);
+      const velocityX = Number(arrow.velocity?.x) || 0;
+      const velocityY = Number(arrow.velocity?.y) || 0;
+      const velocityZ = Number(arrow.velocity?.z) || 0;
+      const nextPosition = {
+        x: (Number(arrow.position?.x) || 0) + (velocityX * deltaSeconds),
+        y: (Number(arrow.position?.y) || 0) + (velocityY * deltaSeconds),
+        z: (Number(arrow.position?.z) || 0) + (velocityZ * deltaSeconds),
+      };
+
+      if (!isRouteSegmentClear(this.state.world, arrow.position, nextPosition, ARROW_PROJECTILE_RADIUS)) {
+        return;
+      }
+
+      const hitTarget = this.getArrowHitTarget(arrow.ownerActorId, previousPosition, nextPosition);
+      if (hitTarget) {
+        this.applyArrowHit(hitTarget, arrow, now);
+        return;
+      }
+
+      arrow.position.x = nextPosition.x;
+      arrow.position.y = nextPosition.y;
+      arrow.position.z = nextPosition.z;
+      arrow.rotationY = Math.atan2(velocityX, velocityZ);
+      nextArrows.push(arrow);
+    });
+
+    this.state.world.arrows = nextArrows;
+  }
+
   advanceTreeRegrowth(now) {
     this.state.world.trees.forEach((tree) => {
       const maxApples = Number.isFinite(tree.maxApples) ? tree.maxApples : 0;
@@ -2408,6 +3705,10 @@ class AiGameEngine {
 
   clearMovement() {
     this.state.ai.movementTargetId = null;
+    this.state.ai.movementRoute = [];
+    this.state.ai.movementRouteIndex = 0;
+    this.state.ai.movementStuckTicks = 0;
+    this.state.ai.movementReplanCount = 0;
   }
 
   maybeRefreshLeaderboards(now = Date.now()) {

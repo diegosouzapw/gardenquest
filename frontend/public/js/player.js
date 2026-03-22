@@ -25,8 +25,18 @@ class Player {
             hairColor: options.hairColor ?? 0x3d2314,
         };
         this.materials = {};
+        this.hitFlashStartedAt = 0;
+        this.hitFlashUntil = 0;
+        this.equipment = {
+            sword: Boolean(options.equipment?.sword),
+            bow: Boolean(options.equipment?.bow),
+        };
+        this.activeActionName = '';
+        this.actionAnimationStartedAt = 0;
+        this.actionAnimationUntil = 0;
 
         this._buildModel();
+        this.setEquipment(this.equipment);
         const spawnPosition = options.spawnPosition || { x: 0, y: 0, z: 15 };
         this.groundY = spawnPosition.y ?? 0;
         this.group.position.set(
@@ -99,6 +109,11 @@ class Player {
         rightArm.position.y = -0.4;
         rightArm.castShadow = true;
         this.rightArmPivot.add(rightArm);
+        this.rightHandAnchor = new THREE.Group();
+        this.rightHandAnchor.position.set(0, -0.82, 0.02);
+        this.rightArmPivot.add(this.rightHandAnchor);
+        this.swordModel = this._buildSwordModel();
+        this.rightHandAnchor.add(this.swordModel);
         this.group.add(this.rightArmPivot);
 
         const legGeo = new THREE.BoxGeometry(0.3, 0.85, 0.3);
@@ -129,6 +144,61 @@ class Player {
         this.rightLegPivot.add(rightShoe);
     }
 
+    _buildSwordModel() {
+        this.materials.swordBlade = new THREE.MeshLambertMaterial({ color: 0xe2e8f0 });
+        this.materials.swordFuller = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+        this.materials.swordGuard = new THREE.MeshLambertMaterial({ color: 0xfbbf24 });
+        this.materials.swordGrip = new THREE.MeshLambertMaterial({ color: 0x4a3728 });
+        this.materials.swordPommel = new THREE.MeshLambertMaterial({ color: 0xd97706 });
+
+        const swordGroup = new THREE.Group();
+
+        const blade = new THREE.Mesh(
+            new THREE.BoxGeometry(0.1, 1.2, 0.08),
+            this.materials.swordBlade
+        );
+        blade.position.y = 0.78;
+        blade.castShadow = true;
+        swordGroup.add(blade);
+
+        const fuller = new THREE.Mesh(
+            new THREE.BoxGeometry(0.03, 0.76, 0.092),
+            this.materials.swordFuller
+        );
+        fuller.position.y = 0.86;
+        fuller.castShadow = true;
+        swordGroup.add(fuller);
+
+        const guard = new THREE.Mesh(
+            new THREE.BoxGeometry(0.42, 0.08, 0.12),
+            this.materials.swordGuard
+        );
+        guard.position.y = 0.18;
+        guard.castShadow = true;
+        swordGroup.add(guard);
+
+        const grip = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.32, 0.08),
+            this.materials.swordGrip
+        );
+        grip.position.y = -0.04;
+        grip.castShadow = true;
+        swordGroup.add(grip);
+
+        const pommel = new THREE.Mesh(
+            new THREE.SphereGeometry(0.085, 10, 10),
+            this.materials.swordPommel
+        );
+        pommel.position.y = -0.24;
+        pommel.castShadow = true;
+        swordGroup.add(pommel);
+
+        swordGroup.position.set(-0.02, 0.02, 0.08);
+        swordGroup.rotation.set(0.16, 0.08, -0.06);
+        swordGroup.visible = false;
+        return swordGroup;
+    }
+
     setColors(nextColors = {}) {
         this.colors = {
             ...this.colors,
@@ -153,6 +223,68 @@ class Player {
 
         if (this.materials.shoes) {
             this.materials.shoes.color.setHex(this.colors.shoeColor);
+        }
+    }
+
+    setEquipment(nextEquipment = {}) {
+        this.equipment = {
+            ...this.equipment,
+            sword: Boolean(nextEquipment.sword),
+            bow: Boolean(nextEquipment.bow),
+        };
+
+        if (this.swordModel) {
+            this.swordModel.visible = this.equipment.sword;
+        }
+    }
+
+    getEquipmentState() {
+        return {
+            ...this.equipment,
+        };
+    }
+
+    playAction(actionName, durationMs = 460) {
+        if (actionName !== 'attack_sword') {
+            return;
+        }
+
+        const now = performance.now();
+        this.activeActionName = actionName;
+        this.actionAnimationStartedAt = now;
+        this.actionAnimationUntil = now + Math.max(220, Number(durationMs) || 0);
+    }
+
+    isActionPlaying(actionName, now = performance.now()) {
+        return this.activeActionName === actionName && now < this.actionAnimationUntil;
+    }
+
+    triggerHitFlash(durationMs = 480) {
+        const now = performance.now();
+        const normalizedDuration = Math.max(180, Number(durationMs) || 0);
+        this.hitFlashStartedAt = now;
+        this.hitFlashUntil = now + normalizedDuration;
+    }
+
+    refreshVisualEffects(now = performance.now()) {
+        const isFlashing = now < this.hitFlashUntil;
+        const blinkPhase = isFlashing
+            ? Math.floor((now - this.hitFlashStartedAt) / 70)
+            : 0;
+        const emissiveIntensity = isFlashing && blinkPhase % 2 === 0 ? 0.95 : 0;
+
+        Object.values(this.materials).forEach((material) => {
+            if (!material?.emissive) {
+                return;
+            }
+
+            material.emissive.setHex(isFlashing ? 0xffffff : 0x000000);
+            material.emissiveIntensity = emissiveIntensity;
+        });
+
+        if (!isFlashing && this.hitFlashUntil !== 0) {
+            this.hitFlashStartedAt = 0;
+            this.hitFlashUntil = 0;
         }
     }
 
@@ -320,22 +452,85 @@ class Player {
     }
 
     _updateAnimation(delta) {
+        const now = performance.now();
+        const hasSwordEquipped = Boolean(this.equipment?.sword);
+        const isSwordAttackActive = hasSwordEquipped
+            && this.activeActionName === 'attack_sword'
+            && now < this.actionAnimationUntil;
+        const swordHoldBlend = hasSwordEquipped && !isSwordAttackActive ? 1 : 0;
+        const swordReadyBlend = hasSwordEquipped && this.isWalking && !isSwordAttackActive ? 1 : 0;
+
         if (this.isWalking) {
             this.walkTime += delta * 8;
-            const swing = Math.sin(this.walkTime) * 0.6;
-
-            this.leftArmPivot.rotation.x = swing;
-            this.rightArmPivot.rotation.x = -swing;
-            this.leftLegPivot.rotation.x = -swing;
-            this.rightLegPivot.rotation.x = swing;
-            this.body.position.y = this.bodyBaseY + Math.abs(Math.sin(this.walkTime * 2)) * 0.05;
         } else {
             this.walkTime = 0;
-            this.leftArmPivot.rotation.x *= 0.85;
-            this.rightArmPivot.rotation.x *= 0.85;
-            this.leftLegPivot.rotation.x *= 0.85;
-            this.rightLegPivot.rotation.x *= 0.85;
-            this.body.position.y = this.bodyBaseY;
+        }
+
+        const walkSwing = this.isWalking ? Math.sin(this.walkTime) * 0.6 : 0;
+        let leftArmX = this.isWalking ? walkSwing : 0;
+        let rightArmX = this.isWalking ? -walkSwing : 0;
+        let leftLegX = this.isWalking ? -walkSwing : 0;
+        let rightLegX = this.isWalking ? walkSwing : 0;
+        let leftArmZ = 0;
+        let rightArmZ = 0;
+        let bodyY = this.isWalking
+            ? this.bodyBaseY + Math.abs(Math.sin(this.walkTime * 2)) * 0.05
+            : this.bodyBaseY;
+
+        if (hasSwordEquipped) {
+            leftArmX = this.isWalking ? walkSwing * 0.18 : 0.04;
+            rightArmX = -0.52 - (0.18 * swordReadyBlend) + (this.isWalking ? (-walkSwing * 0.12) : 0);
+            rightArmZ = 0.28 + (0.08 * swordReadyBlend);
+        }
+
+        if (isSwordAttackActive) {
+            const duration = Math.max(1, this.actionAnimationUntil - this.actionAnimationStartedAt);
+            const progress = Math.max(0, Math.min(1, (now - this.actionAnimationStartedAt) / duration));
+            const windupProgress = progress < 0.34 ? progress / 0.34 : 1;
+            const slashProgress = progress < 0.34 ? 0 : (progress - 0.34) / 0.66;
+            const easedSlash = 1 - ((1 - slashProgress) * (1 - slashProgress));
+
+            if (progress < 0.34) {
+                rightArmX = -0.3 - (1.18 * windupProgress);
+                rightArmZ = -0.24 - (0.34 * windupProgress);
+                leftArmX = 0.12 * windupProgress;
+            } else {
+                rightArmX = -1.48 + (2.2 * easedSlash);
+                rightArmZ = -0.58 + (0.68 * easedSlash);
+                leftArmX = 0.12 - (0.38 * easedSlash);
+            }
+
+            bodyY = this.bodyBaseY + (Math.sin(progress * Math.PI) * 0.08);
+        } else if (this.activeActionName === 'attack_sword' && now >= this.actionAnimationUntil) {
+            this.activeActionName = '';
+            this.actionAnimationStartedAt = 0;
+            this.actionAnimationUntil = 0;
+        }
+
+        this.leftArmPivot.rotation.x = leftArmX;
+        this.leftArmPivot.rotation.y = 0;
+        this.leftArmPivot.rotation.z = leftArmZ;
+        this.rightArmPivot.rotation.x = rightArmX;
+        this.rightArmPivot.rotation.y = 0;
+        this.rightArmPivot.rotation.z = rightArmZ;
+        this.leftLegPivot.rotation.x = leftLegX;
+        this.rightLegPivot.rotation.x = rightLegX;
+        this.body.position.y = bodyY;
+
+        if (this.swordModel) {
+            const swordSwingOffset = isSwordAttackActive
+                ? Math.sin(Math.max(0, Math.min(1, (now - this.actionAnimationStartedAt) / Math.max(1, this.actionAnimationUntil - this.actionAnimationStartedAt))) * Math.PI) * 0.16
+                : 0;
+            this.swordModel.position.set(
+                0.03 - (0.02 * swordReadyBlend),
+                0.05 + (0.01 * swordReadyBlend),
+                0.24 + (0.16 * swordReadyBlend)
+            );
+            this.swordModel.rotation.set(
+                1.26 + (0.16 * swordHoldBlend) + (0.1 * swordReadyBlend) + swordSwingOffset,
+                0.14 + (0.06 * swordReadyBlend),
+                0.46 + (0.06 * swordHoldBlend) + (0.04 * swordReadyBlend) - swordSwingOffset * 0.45
+            );
         }
     }
 

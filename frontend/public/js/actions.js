@@ -4,6 +4,7 @@ class ActionHud {
         this.floatingMsgEl = document.getElementById('floatingMsg');
         this.systemNoticeEl = document.getElementById('systemNotice');
         this.applesCountEl = document.getElementById('applesCount');
+        this.arrowsCountEl = document.getElementById('arrowsCount');
         this.foodLevelEl = document.getElementById('foodLevel');
         this.waterLevelEl = document.getElementById('waterLevel');
         this.scoreValueEl = document.getElementById('scoreValue');
@@ -13,7 +14,7 @@ class ActionHud {
     update(selfState) {
         if (!selfState) {
             this._clearPrompt();
-            this._updateHudInventory({ apples: 0, food: 0, water: 0, score: 0 });
+            this._updateHudInventory({ apples: 0, arrows: 0, food: 0, water: 0, score: 0 });
             return;
         }
 
@@ -37,21 +38,49 @@ class ActionHud {
         const availableActions = selfState.availableActions || {};
         const actionCooldownMs = Number(selfState.actionCooldownMs) || 0;
         const promptLines = [];
-        const currentUseAction = availableActions.kick_ball
-            ? 'kick'
-            : availableActions.drink_water
-                ? 'drink'
-                : availableActions.eat_fruit
-                    ? 'eat'
-                    : null;
-        const currentFruitAction = availableActions.drop_fruit
-            ? 'drop'
-            : availableActions.pick_fruit
-                ? 'pick'
-                : null;
+        let currentUseAction = null;
+        let currentItemAction = null;
+
+        if (availableActions.elevator_up) {
+            currentUseAction = 'elevator_up';
+        } else if (availableActions.elevator_down) {
+            currentUseAction = 'elevator_down';
+        } else if (availableActions.attack_sword) {
+            currentUseAction = 'attack_sword';
+        } else if (availableActions.shoot_arrow) {
+            currentUseAction = 'shoot_arrow';
+        } else if (availableActions.kick_ball) {
+            currentUseAction = 'kick';
+        } else if (availableActions.drink_water) {
+            currentUseAction = 'drink';
+        } else if (availableActions.eat_fruit) {
+            currentUseAction = 'eat';
+        }
+
+        if (availableActions.drop_sword) {
+            currentItemAction = 'drop_sword';
+        } else if (availableActions.drop_bow) {
+            currentItemAction = 'drop_bow';
+        } else if (availableActions.drop_fruit) {
+            currentItemAction = 'drop_fruit';
+        } else if (availableActions.pick_sword) {
+            currentItemAction = 'pick_sword';
+        } else if (availableActions.pick_bow) {
+            currentItemAction = 'pick_bow';
+        } else if (availableActions.pick_fruit) {
+            currentItemAction = 'pick_fruit';
+        }
 
         if (actionCooldownMs <= 0) {
-            if (currentUseAction === 'kick') {
+            if (currentUseAction === 'elevator_up') {
+                promptLines.push('Pressione <kbd>E</kbd> para subir pelo elevador');
+            } else if (currentUseAction === 'elevator_down') {
+                promptLines.push('Pressione <kbd>E</kbd> para descer pelo elevador');
+            } else if (currentUseAction === 'attack_sword') {
+                promptLines.push('Pressione <kbd>E</kbd> para golpear com a espada');
+            } else if (currentUseAction === 'shoot_arrow') {
+                promptLines.push('Pressione <kbd>E</kbd> para atirar com o arco');
+            } else if (currentUseAction === 'kick') {
                 promptLines.push('Pressione <kbd>E</kbd> para chutar a bola');
             } else if (currentUseAction === 'drink') {
                 promptLines.push('Pressione <kbd>E</kbd> para beber agua');
@@ -59,9 +88,17 @@ class ActionHud {
                 promptLines.push('Pressione <kbd>E</kbd> para comer a maca');
             }
 
-            if (currentFruitAction === 'pick') {
+            if (currentItemAction === 'pick_sword') {
+                promptLines.push('Pressione <kbd>F</kbd> para pegar a espada');
+            } else if (currentItemAction === 'drop_sword') {
+                promptLines.push('Pressione <kbd>F</kbd> para soltar a espada');
+            } else if (currentItemAction === 'pick_bow') {
+                promptLines.push('Pressione <kbd>F</kbd> para pegar o arco');
+            } else if (currentItemAction === 'drop_bow') {
+                promptLines.push('Pressione <kbd>F</kbd> para soltar o arco');
+            } else if (currentItemAction === 'pick_fruit') {
                 promptLines.push('Pressione <kbd>F</kbd> para pegar a maca');
-            } else if (currentFruitAction === 'drop') {
+            } else if (currentItemAction === 'drop_fruit') {
                 promptLines.push('Pressione <kbd>F</kbd> para soltar a maca');
             }
         }
@@ -83,6 +120,10 @@ class ActionHud {
     _updateHudInventory(inventory) {
         if (this.applesCountEl) {
             this.applesCountEl.textContent = Number.isFinite(inventory.apples) ? inventory.apples : 0;
+        }
+
+        if (this.arrowsCountEl) {
+            this.arrowsCountEl.textContent = Number.isFinite(inventory.arrows) ? inventory.arrows : 0;
         }
 
         if (this.scoreValueEl) {
@@ -214,14 +255,35 @@ class ActionSoundboard {
 
         const startAt = ctx.currentTime + 0.01;
         switch (action) {
+            case 'ride_elevator':
+                this._playElevator(startAt);
+                break;
             case 'kick_ball':
                 this._playKick(startAt);
                 break;
             case 'drop_fruit':
                 this._playDropFruit(startAt);
                 break;
+            case 'drop_sword':
+                this._playDropSword(startAt);
+                break;
+            case 'drop_bow':
+                this._playDropBow(startAt);
+                break;
             case 'drink_water':
                 this._playDrink(startAt);
+                break;
+            case 'attack_sword':
+                this._playSwordAttack(startAt);
+                break;
+            case 'shoot_arrow':
+                this._playShootArrow(startAt);
+                break;
+            case 'pick_sword':
+                this._playPickSword(startAt);
+                break;
+            case 'pick_bow':
+                this._playPickBow(startAt);
                 break;
             case 'pick_fruit':
                 this._playPickFruit(startAt);
@@ -232,6 +294,23 @@ class ActionSoundboard {
             default:
                 break;
         }
+    }
+
+    _playElevator(startAt) {
+        this._playTone(startAt, 0.22, {
+            type: 'triangle',
+            frequency: 220,
+            frequencyEnd: 440,
+            gain: 0.18,
+            release: 0.16,
+        });
+        this._playTone(startAt + 0.06, 0.2, {
+            type: 'sine',
+            frequency: 330,
+            frequencyEnd: 520,
+            gain: 0.1,
+            release: 0.18,
+        });
     }
 
     _playKick(startAt) {
@@ -313,6 +392,122 @@ class ActionSoundboard {
             frequency: 700,
             frequencyEnd: 420,
             q: 1.8,
+        });
+    }
+
+    _playPickBow(startAt) {
+        this._playTone(startAt, 0.09, {
+            type: 'triangle',
+            frequency: 250,
+            frequencyEnd: 340,
+            gain: 0.15,
+            release: 0.09,
+        });
+        this._playTone(startAt + 0.05, 0.11, {
+            type: 'sine',
+            frequency: 420,
+            frequencyEnd: 520,
+            gain: 0.09,
+            release: 0.11,
+        });
+    }
+
+    _playPickSword(startAt) {
+        this._playTone(startAt, 0.08, {
+            type: 'triangle',
+            frequency: 300,
+            frequencyEnd: 420,
+            gain: 0.15,
+            release: 0.08,
+        });
+        this._playTone(startAt + 0.04, 0.11, {
+            type: 'sine',
+            frequency: 520,
+            frequencyEnd: 660,
+            gain: 0.08,
+            release: 0.11,
+        });
+    }
+
+    _playDropBow(startAt) {
+        this._playTone(startAt, 0.13, {
+            type: 'triangle',
+            frequency: 300,
+            frequencyEnd: 180,
+            gain: 0.11,
+            release: 0.11,
+        });
+        this._playNoiseBurst(startAt + 0.012, 0.06, {
+            gain: 0.05,
+            filterType: 'bandpass',
+            frequency: 540,
+            frequencyEnd: 320,
+            q: 1.9,
+        });
+    }
+
+    _playDropSword(startAt) {
+        this._playTone(startAt, 0.12, {
+            type: 'triangle',
+            frequency: 360,
+            frequencyEnd: 210,
+            gain: 0.12,
+            release: 0.1,
+        });
+        this._playNoiseBurst(startAt + 0.008, 0.05, {
+            gain: 0.06,
+            filterType: 'bandpass',
+            frequency: 900,
+            frequencyEnd: 520,
+            q: 1.5,
+        });
+    }
+
+    _playSwordAttack(startAt) {
+        this._playNoiseBurst(startAt, 0.045, {
+            gain: 0.08,
+            filterType: 'highpass',
+            frequency: 3200,
+            frequencyEnd: 1800,
+            q: 0.8,
+        });
+        this._playTone(startAt, 0.11, {
+            type: 'triangle',
+            frequency: 760,
+            frequencyEnd: 260,
+            gain: 0.12,
+            release: 0.1,
+        });
+        this._playTone(startAt + 0.018, 0.09, {
+            type: 'square',
+            frequency: 180,
+            frequencyEnd: 120,
+            gain: 0.04,
+            release: 0.08,
+        });
+    }
+
+    _playShootArrow(startAt) {
+        this._playNoiseBurst(startAt, 0.04, {
+            gain: 0.06,
+            filterType: 'highpass',
+            frequency: 2600,
+            frequencyEnd: 1400,
+            q: 0.7,
+        });
+        this._playTone(startAt, 0.12, {
+            type: 'triangle',
+            frequency: 680,
+            frequencyEnd: 220,
+            gain: 0.12,
+            release: 0.12,
+        });
+        this._playTone(startAt + 0.03, 0.09, {
+            type: 'sine',
+            frequency: 240,
+            frequencyEnd: 160,
+            gain: 0.05,
+            release: 0.08,
         });
     }
 
