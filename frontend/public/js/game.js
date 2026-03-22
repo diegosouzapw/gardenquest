@@ -2006,7 +2006,7 @@
             if (event.repeat) {
                 return;
             }
-            sendUseActionCommand();
+            handlePrimaryActionInput();
             return;
         }
 
@@ -2038,6 +2038,14 @@
         lastInputSignature = '__stale__';
         flushMovementInput();
     });
+
+    function handlePrimaryActionInput() {
+        if (isChatOpen || isProfileOpen || isCommandsOpen) {
+            return;
+        }
+
+        sendUseActionCommand();
+    }
 
     function requestPointerLock() {
         if (isTouchDevice || isChatOpen || isProfileOpen || isCommandsOpen || document.pointerLockElement === canvas) return;
@@ -2415,6 +2423,13 @@
     }
 
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    canvas.addEventListener('mousedown', (event) => {
+        if (event.button !== 0) {
+            return;
+        }
+
+        handlePrimaryActionInput();
+    });
     canvas.addEventListener('click', requestPointerLock);
     document.addEventListener('pointerlockchange', handlePointerLockChange);
     document.addEventListener('pointerlockerror', handlePointerLockError);
