@@ -101,17 +101,16 @@ const AI_ROUTE_STUCK_DISTANCE = 0.05;
 const AI_ROUTE_REPLAN_TICKS = 4;
 const AI_ROUTE_REPLAN_LIMIT = 3;
 
-const AI_SPAWN_POINT = Object.freeze({ x: -3, y: 0, z: 15 });
-
+const AI_SPAWN_POINT = Object.freeze({ x: -3.6, y: 0, z: 18 });
 const PLAYER_SPAWN_POINTS = Object.freeze([
-  Object.freeze({ x: -8, y: 0, z: 26 }),
-  Object.freeze({ x: 8, y: 0, z: 26 }),
-  Object.freeze({ x: -14, y: 0, z: 22 }),
-  Object.freeze({ x: 14, y: 0, z: 22 }),
-  Object.freeze({ x: -4, y: 0, z: 30 }),
-  Object.freeze({ x: 4, y: 0, z: 30 }),
-  Object.freeze({ x: -12, y: 0, z: 30 }),
-  Object.freeze({ x: 12, y: 0, z: 30 }),
+  Object.freeze({ x: -16, y: 0, z: 23 }),
+  Object.freeze({ x: 16, y: 0, z: 23 }),
+  Object.freeze({ x: -8, y: 0, z: 10 }),
+  Object.freeze({ x: 8, y: 0, z: 10 }),
+  Object.freeze({ x: 0, y: 0, z: 10 }),
+  Object.freeze({ x: -14, y: 0, z: 32 }),
+  Object.freeze({ x: 14, y: 0, z: 32 }),
+  Object.freeze({ x: 0, y: 0, z: 38 }),
 ]);
 
 function clamp(value, min, max) {

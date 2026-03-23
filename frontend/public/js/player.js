@@ -114,6 +114,10 @@ class Player {
         this.rightArmPivot.add(this.rightHandAnchor);
         this.swordModel = this._buildSwordModel();
         this.rightHandAnchor.add(this.swordModel);
+        this.bowModel = this._buildBowModel();
+        this.rightHandAnchor.add(this.bowModel);
+        this.arrowModel = this._buildArrowModel();
+        this.rightHandAnchor.add(this.arrowModel);
         this.group.add(this.rightArmPivot);
 
         const legGeo = new THREE.BoxGeometry(0.3, 0.85, 0.3);
@@ -199,6 +203,80 @@ class Player {
         return swordGroup;
     }
 
+    _buildBowModel() {
+        this.materials.bowWood = new THREE.MeshLambertMaterial({ color: 0x78350f });
+        this.materials.bowString = new THREE.MeshLambertMaterial({ color: 0xffffff });
+
+        const bowGroup = new THREE.Group();
+        const segmentGeo = new THREE.BoxGeometry(0.06, 0.45, 0.06);
+
+        const midSegment = new THREE.Mesh(segmentGeo, this.materials.bowWood);
+        midSegment.castShadow = true;
+        bowGroup.add(midSegment);
+
+        const topSegment = new THREE.Mesh(segmentGeo, this.materials.bowWood);
+        topSegment.position.y = 0.4;
+        topSegment.position.z = -0.1;
+        topSegment.rotation.x = -0.4;
+        topSegment.castShadow = true;
+        bowGroup.add(topSegment);
+
+        const botSegment = new THREE.Mesh(segmentGeo, this.materials.bowWood);
+        botSegment.position.y = -0.4;
+        botSegment.position.z = -0.1;
+        botSegment.rotation.x = 0.4;
+        botSegment.castShadow = true;
+        bowGroup.add(botSegment);
+
+        const stringGeo = new THREE.BoxGeometry(0.015, 1.15, 0.015);
+        const bowString = new THREE.Mesh(stringGeo, this.materials.bowString);
+        bowString.position.z = -0.22;
+        bowGroup.add(bowString);
+
+        bowGroup.position.set(-0.02, 0.02, 0.08);
+        bowGroup.rotation.set(0.16, 0.08, -0.06);
+        bowGroup.visible = false;
+        return bowGroup;
+    }
+
+    _buildArrowModel() {
+        this.materials.arrowShaft = new THREE.MeshLambertMaterial({ color: 0xd97706 });
+        this.materials.arrowHead = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+        this.materials.arrowFletching = new THREE.MeshLambertMaterial({ color: 0xffffff });
+
+        const arrowGroup = new THREE.Group();
+
+        const shaft = new THREE.Mesh(
+            new THREE.BoxGeometry(0.03, 1.0, 0.03),
+            this.materials.arrowShaft
+        );
+        shaft.rotation.x = Math.PI / 2;
+        shaft.castShadow = true;
+        arrowGroup.add(shaft);
+
+        const head = new THREE.Mesh(
+            new THREE.ConeGeometry(0.06, 0.18, 4),
+            this.materials.arrowHead
+        );
+        head.position.z = 0.55;
+        head.rotation.x = Math.PI / 2;
+        head.castShadow = true;
+        arrowGroup.add(head);
+
+        const fletchGeo = new THREE.BoxGeometry(0.12, 0.01, 0.18);
+        const fletch1 = new THREE.Mesh(fletchGeo, this.materials.arrowFletching);
+        fletch1.position.z = -0.42;
+        arrowGroup.add(fletch1);
+
+        const fletch2 = new THREE.Mesh(fletchGeo, this.materials.arrowFletching);
+        fletch2.position.z = -0.42;
+        fletch2.rotation.z = Math.PI / 2;
+        arrowGroup.add(fletch2);
+
+        arrowGroup.visible = false;
+        return arrowGroup;
+    }
+
     setColors(nextColors = {}) {
         this.colors = {
             ...this.colors,
@@ -236,6 +314,14 @@ class Player {
         if (this.swordModel) {
             this.swordModel.visible = this.equipment.sword;
         }
+
+        if (this.bowModel) {
+            this.bowModel.visible = this.equipment.bow;
+        }
+
+        if (this.arrowModel) {
+            this.arrowModel.visible = false;
+        }
     }
 
     getEquipmentState() {
@@ -245,7 +331,7 @@ class Player {
     }
 
     playAction(actionName, durationMs = 460) {
-        if (actionName !== 'attack_sword') {
+        if (actionName !== 'attack_sword' && actionName !== 'shoot_arrow') {
             return;
         }
 
@@ -464,11 +550,18 @@ class Player {
     _updateAnimation(delta) {
         const now = performance.now();
         const hasSwordEquipped = Boolean(this.equipment?.sword);
+        const hasBowEquipped = Boolean(this.equipment?.bow);
         const isSwordAttackActive = hasSwordEquipped
             && this.activeActionName === 'attack_sword'
             && now < this.actionAnimationUntil;
+        const isShootArrowActive = hasBowEquipped
+            && this.activeActionName === 'shoot_arrow'
+            && now < this.actionAnimationUntil;
+
         const swordHoldBlend = hasSwordEquipped && !isSwordAttackActive ? 1 : 0;
         const swordReadyBlend = hasSwordEquipped && this.isWalking && !isSwordAttackActive ? 1 : 0;
+        const bowHoldBlend = hasBowEquipped && !isShootArrowActive ? 1 : 0;
+        const bowReadyBlend = hasBowEquipped && this.isWalking && !isShootArrowActive ? 1 : 0;
 
         if (this.isWalking) {
             this.walkTime += delta * 8;
@@ -491,6 +584,10 @@ class Player {
             leftArmX = this.isWalking ? walkSwing * 0.18 : 0.04;
             rightArmX = -0.52 - (0.18 * swordReadyBlend) + (this.isWalking ? (-walkSwing * 0.12) : 0);
             rightArmZ = 0.28 + (0.08 * swordReadyBlend);
+        } else if (hasBowEquipped) {
+            leftArmX = this.isWalking ? (walkSwing * 0.12) : 0.08;
+            rightArmX = -0.65 - (0.24 * bowReadyBlend) + (this.isWalking ? (-walkSwing * 0.15) : 0);
+            rightArmZ = 0.35 + (0.12 * bowReadyBlend);
         }
 
         if (isSwordAttackActive) {
@@ -512,6 +609,21 @@ class Player {
 
             bodyY = this.bodyBaseY + (Math.sin(progress * Math.PI) * 0.08);
         } else if (this.activeActionName === 'attack_sword' && now >= this.actionAnimationUntil) {
+            this.activeActionName = '';
+            this.actionAnimationStartedAt = 0;
+            this.actionAnimationUntil = 0;
+        } else if (isShootArrowActive) {
+            const duration = Math.max(1, this.actionAnimationUntil - this.actionAnimationStartedAt);
+            const progress = Math.max(0, Math.min(1, (now - this.actionAnimationStartedAt) / duration));
+            const drawProgress = progress < 0.65 ? progress / 0.65 : 1;
+            const releaseProgress = progress < 0.65 ? 0 : (progress - 0.65) / 0.35;
+
+            rightArmX = -0.8 - (0.6 * drawProgress) + (0.5 * releaseProgress);
+            rightArmZ = 0.4 + (0.35 * drawProgress) - (0.45 * releaseProgress);
+            leftArmX = 0.1 + (0.2 * drawProgress);
+            
+            bodyY = this.bodyBaseY + (Math.sin(progress * Math.PI) * 0.04);
+        } else if (this.activeActionName === 'shoot_arrow' && now >= this.actionAnimationUntil) {
             this.activeActionName = '';
             this.actionAnimationStartedAt = 0;
             this.actionAnimationUntil = 0;
@@ -541,6 +653,41 @@ class Player {
                 0.14 + (0.06 * swordReadyBlend),
                 0.46 + (0.06 * swordHoldBlend) + (0.04 * swordReadyBlend) - swordSwingOffset * 0.45
             );
+        }
+
+        if (this.bowModel) {
+            const bowHoldBlend = hasBowEquipped && !isShootArrowActive ? 1 : 0;
+            const bowReadyBlend = hasBowEquipped && this.isWalking && !isShootArrowActive ? 1 : 0;
+
+            this.bowModel.position.set(
+                0.03 - (0.02 * bowReadyBlend),
+                0.06 + (0.01 * bowReadyBlend),
+                0.28 + (0.14 * bowReadyBlend)
+            );
+            this.bowModel.rotation.set(
+                1.35 + (0.12 * bowHoldBlend) + (0.08 * bowReadyBlend),
+                0.12 + (0.05 * bowReadyBlend),
+                0.3 + (0.04 * bowHoldBlend) + (0.02 * bowReadyBlend)
+            );
+
+            if (this.arrowModel) {
+                if (isShootArrowActive) {
+                    const duration = Math.max(1, this.actionAnimationUntil - this.actionAnimationStartedAt);
+                    const progress = Math.max(0, Math.min(1, (now - this.actionAnimationStartedAt) / duration));
+                    const drawProgress = progress < 0.65 ? progress / 0.65 : 1;
+                    const releaseProgress = progress < 0.65 ? 0 : (progress - 0.65) / 0.35;
+
+                    this.arrowModel.visible = releaseProgress < 0.15;
+                    this.arrowModel.position.set(
+                        this.bowModel.position.x,
+                        this.bowModel.position.y,
+                        this.bowModel.position.z - (0.38 * drawProgress) + (1.2 * releaseProgress)
+                    );
+                    this.arrowModel.rotation.copy(this.bowModel.rotation);
+                } else {
+                    this.arrowModel.visible = false;
+                }
+            }
         }
     }
 

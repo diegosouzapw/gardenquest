@@ -1178,13 +1178,24 @@
                 || !isSwordAttackPlaying
             );
 
-        if (nextModelActionName === renderState.modelActionName && !shouldReplaySwordAttack) {
+        const isShootArrowPlaying = canCheckActionPlayback
+            ? renderState.actor.isActionPlaying('shoot_arrow')
+            : false;
+        const shouldReplayShootArrow = nextModelActionName === 'shoot_arrow'
+            && (
+                nextModelActionName !== renderState.modelActionName
+                || !isShootArrowPlaying
+            );
+
+        if (nextModelActionName === renderState.modelActionName && !shouldReplaySwordAttack && !shouldReplayShootArrow) {
             return;
         }
 
         renderState.modelActionName = nextModelActionName;
         if (shouldReplaySwordAttack && typeof renderState.actor.playAction === 'function') {
             renderState.actor.playAction('attack_sword');
+        } else if (shouldReplayShootArrow && typeof renderState.actor.playAction === 'function') {
+            renderState.actor.playAction('shoot_arrow');
         }
     }
 
