@@ -3,11 +3,32 @@ const { setupSecurity } = require('./middleware/security');
 const createAuthRoutes = require('./routes/auth');
 const createAiGameRoutes = require('./routes/ai-game');
 const createPlatformRoutes = require('./routes/platform');
+const createAgentRoutes = require('./routes/agents');
 const config = require('./config');
 const { verifyDatabaseConnection } = require('./database/postgres');
+const agentRepository = require('./database/agents');
+const { SecretVault } = require('./services/crypto/SecretVault');
+const { AgentManagementService } = require('./services/agents/AgentManagementService');
+const { requireAuth } = require('./middleware/authenticate');
 const { AiGameEngine } = require('./games/garden-quest/engine');
 
 const app = express();
+
+// SecretVault initialization (optional in local, required in production)
+const agentSecretMasterKeyHex = process.env.AGENT_SECRET_MASTER_KEY_HEX
+  || (config.APP_ENV === 'local'
+    ? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    : null);
+const secretVault = agentSecretMasterKeyHex
+  ? new SecretVault({
+    agentRepository,
+    masterKeyHex: agentSecretMasterKeyHex,
+  })
+  : null;
+const agentService = new AgentManagementService({
+  agentRepository,
+  secretVault,
+});
 const aiGameEngine = new AiGameEngine();
 
 // Trust Cloud Run proxy for secure cookies
@@ -17,7 +38,7 @@ app.set('trust proxy', 1);
 if (config.NODE_ENV === 'development' || config.APP_ENV === 'local') {
     setInterval(() => {
         console.log(`[SERVER-HEARTBEAT] ⚙️ Alive at ${new Date().toLocaleTimeString()} (RAM: ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB)`);
-    }, 60000); // Changed from 2000ms to 60000ms (1 minute)
+    }, 60000);
 }
 
 // Enhanced Logging middleware
@@ -25,19 +46,15 @@ app.use((req, res, next) => {
   const start = Date.now();
   const referer = req.headers.referer || 'unknown';
   
-  // Filter out noisy requests that are likely health checks or probes
   const isQuietPath = req.url === '/' || req.url === '/health';
   const shouldLog = config.NODE_ENV === 'development' && (!isQuietPath || process.env.VERBOSE_LOGS === 'true');
 
-  // Log request start
   if (shouldLog) {
     console.log(`>>> [REQUISICAO] ${req.method} ${req.url} [Referer: ${referer}]`);
   }
 
-  // Hook into response finish
   res.on('finish', () => {
     const duration = Date.now() - start;
-    // Log response if it was a logged request OR if it failed (even on a quiet path)
     if (shouldLog || res.statusCode >= 400) {
         console.log(`<<< [RESPOSTA] ${req.method} ${req.url} - Status: ${res.statusCode} (${duration}ms)`);
     }
@@ -65,6 +82,8 @@ app.use('/api/v1/platform', createPlatformRoutes());
 app.use('/api/v1/system', systemRoutes);
 app.use('/api/v1/ai-game', aiGameRoutes);
 app.use('/api/v1/games/garden-quest', aiGameRoutes);
+app.use('/api/v1/agents', createAgentRoutes({ agentService, authMiddleware: requireAuth }));
+
 
 // Health check (Cloud Run requirement)
 app.get('/health', (req, res) => {
@@ -83,12 +102,13 @@ app.use((req, res) => {
 // Error handler
 app.use((err, req, res, next) => {
   console.error('Server error:', err.message);
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(err.statusCode || 500).json({ error: err.publicMessage || err.message || 'Internal server error' });
 });
 
 async function startServer() {
   try {
     await verifyDatabaseConnection();
+    await agentRepository.ensureAgentTables();
     console.log('Database connection established.');
   } catch (error) {
     console.error('Database connection failed:', error.message);
@@ -104,6 +124,7 @@ async function startServer() {
     }
     console.log(`Frontend URL: ${config.FRONTEND_URL || '(unset)'}`);
     console.log(`AI player: ${config.AI_GAME_ENABLED ? 'enabled' : 'disabled'}`);
+    console.log(`SecretVault: ${secretVault ? 'enabled' : 'disabled'}`);
 
     if (!config.GOOGLE_CLIENT_ID) {
       console.error('WARNING: GOOGLE_CLIENT_ID is not set. Google Login will not work.');
