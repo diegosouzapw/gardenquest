@@ -10,6 +10,8 @@ const agentRepository = require('./database/agents');
 const { SecretVault } = require('./services/crypto/SecretVault');
 const { AgentManagementService } = require('./services/agents/AgentManagementService');
 const { requireAuth } = require('./middleware/authenticate');
+const realmRepository = require('./database/realm-leases');
+const { RealmLeaseService } = require('./services/realm/RealmLeaseService');
 const { AiGameEngine } = require('./games/garden-quest/engine');
 
 const app = express();
@@ -29,7 +31,8 @@ const agentService = new AgentManagementService({
   agentRepository,
   secretVault,
 });
-const aiGameEngine = new AiGameEngine();
+const aiGameEngine = new AiGameEngine({ agentRepository, secretVault });
+const realmLeaseService = new RealmLeaseService({ realmRepository });
 
 // Trust Cloud Run proxy for secure cookies
 app.set('trust proxy', 1);
@@ -109,6 +112,7 @@ async function startServer() {
   try {
     await verifyDatabaseConnection();
     await agentRepository.ensureAgentTables();
+    await realmRepository.ensureRealmLeaseTable();
     console.log('Database connection established.');
   } catch (error) {
     console.error('Database connection failed:', error.message);
@@ -133,15 +137,27 @@ async function startServer() {
     }
 
     aiGameEngine.start();
+
+    // Realm lease heartbeat (leader election)
+    setInterval(() => {
+      realmLeaseService.heartbeat().catch((error) => {
+        console.error('Realm lease heartbeat failed:', error.message);
+      });
+    }, Math.round(realmLeaseService.leaseTtlMs / 2));
+    realmLeaseService.heartbeat().catch((error) => {
+      console.error('Initial realm lease heartbeat failed:', error.message);
+    });
   });
 }
 
 process.on('SIGINT', () => {
   aiGameEngine.stop();
+  realmLeaseService.release().catch(() => {});
 });
 
 process.on('SIGTERM', () => {
   aiGameEngine.stop();
+  realmLeaseService.release().catch(() => {});
 });
 
 startServer();

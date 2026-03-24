@@ -213,10 +213,24 @@ async function recordAgentRun({ agentId, status, errorCode = null, latencyMs = n
   );
 }
 
+async function listAllActiveAgents() {
+  const db = getPool();
+  const result = await db.query(
+    `
+      SELECT id, owner_user_id AS "ownerUserId", name, mode, provider, status, route_hint AS "routeHint", policy_json AS "policyJson", created_at AS "createdAt", updated_at AS "updatedAt"
+      FROM public.agents
+      WHERE status = 'active'
+      ORDER BY created_at ASC
+    `
+  );
+  return result.rows;
+}
+
 module.exports = {
   ensureAgentTables,
   createAgent,
   listAgentsByOwner,
+  listAllActiveAgents,
   getAgentById,
   getAgentByIdForOwner,
   saveAgentSecret,

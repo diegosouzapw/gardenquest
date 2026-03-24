@@ -11,6 +11,7 @@ const {
   upsertGameScore,
 } = require('../../database/postgres');
 const { createOpenAiDecisionClient } = require('../../services/openai-client');
+const { AgentDecisionService } = require('../../services/agents/AgentDecisionService');
 const {
   createWorldState,
   getHouseTowerElevators,
@@ -85,6 +86,8 @@ const LEADERBOARD_LIMIT = 10;
 const LEADERBOARD_REFRESH_MS = 10000;
 const PLAYER_NICKNAME_MAX_LENGTH = 24;
 const DEFAULT_PLAYER_OUTFIT_COLOR = '#2563eb';
+const DEFAULT_AGENT_OUTFIT_COLORS = Object.freeze(['#7c3aed', '#0891b2', '#dc2626', '#16a34a', '#ea580c']);
+const AGENT_WORLD_SYNC_INTERVAL_MS = 30000;
 const PLAYER_CHAT_HISTORY_LIMIT = 20;
 const DEFAULT_CHAT_BLOCKED_WORDS = Object.freeze([
   'merda',
@@ -259,6 +262,13 @@ function buildDefaultPlayerNickname(userId) {
 function buildPlayerAppearance(appearance = {}) {
   return {
     outfitColor: sanitizeHexColor(appearance?.outfitColor) || DEFAULT_PLAYER_OUTFIT_COLOR,
+  };
+}
+
+function buildAgentAppearance(appearance = {}, actorId = '') {
+  const fallbackColor = DEFAULT_AGENT_OUTFIT_COLORS[hashString(actorId) % DEFAULT_AGENT_OUTFIT_COLORS.length];
+  return {
+    outfitColor: sanitizeHexColor(appearance?.outfitColor) || fallbackColor,
   };
 }
 
@@ -920,13 +930,83 @@ function createPlayerState(user, spawnPoint) {
   };
 }
 
+function createAgentActorState(agentRecord, spawnPoint) {
+  const now = Date.now();
+  const displayName = sanitizeNickname(agentRecord?.name) || `Agente ${1000 + (hashString(agentRecord?.id) % 9000)}`;
+  return {
+    id: agentRecord.id,
+    actorType: 'agent',
+    ownerUserId: agentRecord.ownerUserId,
+    name: displayName,
+    mode: agentRecord.mode,
+    provider: agentRecord.provider,
+    routeHint: agentRecord.routeHint || null,
+    policyJson: agentRecord.policyJson || {},
+    appearance: buildAgentAppearance(agentRecord?.appearance, agentRecord.id),
+    position: clonePoint(spawnPoint),
+    rotationY: Math.PI,
+    status: 'idle',
+    currentAction: 'wait',
+    movementTargetId: null,
+    movementRoute: [],
+    movementRouteIndex: 0,
+    movementStuckTicks: 0,
+    movementReplanCount: 0,
+    actionCooldownUntil: 0,
+    inventory: {
+      apples: 0,
+      hasBow: false,
+      hasSword: false,
+      arrows: 0,
+      food: MAX_FOOD,
+      water: MAX_WATER,
+    },
+    recentActions: [],
+    speech: null,
+    speechExpiresAt: 0,
+    hitFlashUntil: 0,
+    lastHitAt: 0,
+    lastHitType: null,
+    score: 0,
+    bestScore: 0,
+    scoreProgress: 0,
+    scoreDirection: 0,
+    deaths: 0,
+    respawns: 0,
+    respawnAt: 0,
+    lastDeathReason: null,
+    joinedWorldAt: now,
+    lastSyncedAt: now,
+    nextDecisionAt: now + 1500,
+    lastDecisionAt: null,
+    lastDecisionSource: 'boot',
+    lastError: null,
+  };
+}
+
+function chooseAgentSpawnPoint(existingActors) {
+  const usedPositions = [];
+  for (const actor of existingActors) {
+    if (actor?.position) usedPositions.push(actor.position);
+  }
+  for (const spawn of PLAYER_SPAWN_POINTS) {
+    const tooClose = usedPositions.some((pos) => distanceBetween(pos, spawn) < 3);
+    if (!tooClose) return spawn;
+  }
+  return PLAYER_SPAWN_POINTS[Math.floor(Math.random() * PLAYER_SPAWN_POINTS.length)];
+}
+
 class AiGameEngine {
-  constructor({ logger = console } = {}) {
+  constructor({ logger = console, agentRepository = null, secretVault = null } = {}) {
     this.logger = logger;
+    this.agentRepository = agentRepository;
+    this.agentDecisionService = new AgentDecisionService({ logger, agentRepository, secretVault });
     this.decisionClient = createOpenAiDecisionClient();
     this.simulationHandle = null;
     this.decisionHandle = null;
     this.pendingDecision = false;
+    this.pendingAgentDecisions = new Set();
+    this.worldAgentSyncInFlight = false;
     this.playerSessionLoads = new Map();
     this.state = this.createInitialState();
   }
@@ -938,8 +1018,10 @@ class AiGameEngine {
     return {
       world,
       players: new Map(),
+      userAgents: new Map(),
       startedAt: now,
       tick: 0,
+      nextWorldAgentSyncAt: now,
       nextDecisionAt: now + 500,
       lastDecisionAt: null,
       lastDecisionSource: 'boot',
@@ -1003,6 +1085,9 @@ class AiGameEngine {
 
     this.logEvent('ai_game_started');
     this.persistActorStats(this.state.ai);
+    this.syncWorldAgents().catch((error) => {
+      this.logger.error('Initial world agent sync failed:', error.message);
+    });
     this.refreshLeaderboard().catch((error) => {
       this.logger.error('Initial leaderboard refresh failed:', error.message);
     });
@@ -1017,10 +1102,13 @@ class AiGameEngine {
       this.advanceSimulation(config.AI_SIMULATION_TICK_MS);
     }, config.AI_SIMULATION_TICK_MS);
 
-    if (config.AI_GAME_ENABLED) {
+    if (config.AI_GAME_ENABLED || config.AGENT_WORLD_ENABLED) {
       this.decisionHandle = setInterval(() => {
         this.maybeRequestDecision().catch((error) => {
           this.logger.error('AI decision loop error:', error.message);
+        });
+        this.maybeRequestAgentDecisions().catch((error) => {
+          this.logger.error('World agent decision loop error:', error.message);
         });
       }, 500);
     }
@@ -1069,9 +1157,12 @@ class AiGameEngine {
       worldVersion: STATIC_WORLD_VERSION,
       settings: this.buildPublicSettings(),
       self: player ? this.buildSelfState(player, now) : null,
-      players: Array.from(this.state.players.values())
-        .map((candidate) => this.buildPublicPlayerState(candidate, now))
-        .sort((left, right) => left.name.localeCompare(right.name, 'pt-BR')),
+      players: [
+        ...Array.from(this.state.players.values()).map((c) => this.buildPublicPlayerState(c, now)),
+        ...Array.from(this.state.userAgents.values()).map((c) => this.buildPublicAgentState(c, now)),
+      ].sort((left, right) => left.name.localeCompare(right.name, 'pt-BR')),
+      agents: Array.from(this.state.userAgents.values())
+        .map((c) => this.buildPublicAgentState(c, now)),
       ai: this.buildAiPublicState(now),
       world: getPublicDynamicWorldState(this.state.world),
       leaderboard: {
@@ -1155,6 +1246,19 @@ class AiGameEngine {
     return {
       ...this.buildActorPublicState(player, now),
       appearance: buildPlayerAppearance(player.appearance),
+    };
+  }
+
+  buildPublicAgentState(agent, now) {
+    return {
+      ...this.buildActorPublicState(agent, now),
+      appearance: buildAgentAppearance(agent.appearance, agent.id),
+      ownerUserId: agent.ownerUserId,
+      provider: agent.provider,
+      mode: agent.mode,
+      movementTargetId: agent.movementTargetId,
+      inventory: buildInventory(agent),
+      lastDecisionAt: agent.lastDecisionAt ? new Date(agent.lastDecisionAt).toISOString() : null,
     };
   }
 
@@ -1630,6 +1734,14 @@ class AiGameEngine {
       }
     }
 
+    for (const agent of this.state.userAgents.values()) {
+      this.advanceActorVitals(agent, deltaSeconds, now);
+      this.advanceActorRespawn(agent, now);
+      if (agent.status !== 'dead') {
+        this.advanceAgentMovement(agent, deltaSeconds, now);
+      }
+    }
+
     for (const player of this.state.players.values()) {
       this.advancePlayer(player, deltaSeconds, now);
     }
@@ -1639,6 +1751,7 @@ class AiGameEngine {
     this.advanceTreeRegrowth(now);
     this.cleanupExpiredGraves(now);
     this.cleanupInactivePlayers(now);
+    this.maybeSyncWorldAgents(now);
     this.advanceElevators(deltaSeconds, now);
   }
 
@@ -2196,6 +2309,312 @@ class AiGameEngine {
     } finally {
       this.pendingDecision = false;
     }
+  }
+
+  async syncWorldAgents() {
+    if (!this.agentRepository || this.worldAgentSyncInFlight) {
+      return;
+    }
+
+    this.worldAgentSyncInFlight = true;
+    try {
+      const allAgents = await this.agentRepository.listAllActiveAgents
+        ? await this.agentRepository.listAllActiveAgents()
+        : [];
+
+      const activeAgentIds = new Set(allAgents.map((a) => a.id));
+
+      // Remove agents that are no longer active in the DB
+      for (const [agentId] of this.state.userAgents) {
+        if (!activeAgentIds.has(agentId)) {
+          this.state.userAgents.delete(agentId);
+          this.logger.info(`Agent removed from world: ${agentId}`);
+        }
+      }
+
+      // Add new agents that aren't in the world yet
+      for (const agentRecord of allAgents) {
+        if (!this.state.userAgents.has(agentRecord.id)) {
+          const existingActors = [
+            this.state.ai,
+            ...this.state.players.values(),
+            ...this.state.userAgents.values(),
+          ];
+          const spawnPoint = chooseAgentSpawnPoint(existingActors);
+          const agentState = createAgentActorState(agentRecord, spawnPoint);
+          this.state.userAgents.set(agentRecord.id, agentState);
+          this.persistActorStats(agentState);
+          this.logger.info(`Agent joined world: ${agentRecord.id} (${agentRecord.name})`);
+        }
+      }
+
+      this.state.nextWorldAgentSyncAt = Date.now() + AGENT_WORLD_SYNC_INTERVAL_MS;
+    } catch (error) {
+      this.logger.error('Failed to sync world agents:', error.message);
+      this.state.nextWorldAgentSyncAt = Date.now() + 5000;
+    } finally {
+      this.worldAgentSyncInFlight = false;
+    }
+  }
+
+  maybeSyncWorldAgents(now) {
+    if (!config.AGENT_WORLD_ENABLED || !this.agentRepository) {
+      return;
+    }
+    if (now >= this.state.nextWorldAgentSyncAt) {
+      this.syncWorldAgents().catch((error) => {
+        this.logger.error('Periodic agent sync failed:', error.message);
+      });
+    }
+  }
+
+  async maybeRequestAgentDecisions() {
+    if (!config.AGENT_WORLD_ENABLED) {
+      return;
+    }
+
+    const now = Date.now();
+
+    for (const agent of this.state.userAgents.values()) {
+      if (agent.status === 'dead') {
+        agent.nextDecisionAt = Math.max(agent.nextDecisionAt, agent.respawnAt || (now + 500));
+        continue;
+      }
+
+      if (this.pendingAgentDecisions.has(agent.id)) {
+        continue;
+      }
+
+      if (now < agent.nextDecisionAt) {
+        continue;
+      }
+
+      // Skip if agent is still executing a movement
+      if (agent.currentAction === 'move_to' && agent.movementTargetId) {
+        continue;
+      }
+
+      // Skip if agent is in cooldown
+      const actionRequiresCooldown =
+        agent.currentAction === 'drink_water'
+        || agent.currentAction === 'pick_fruit'
+        || agent.currentAction === 'eat_fruit';
+      if (actionRequiresCooldown && now < agent.actionCooldownUntil) {
+        continue;
+      }
+
+      this.pendingAgentDecisions.add(agent.id);
+
+      this.agentDecisionService.decideForAgent({
+        agentId: agent.id,
+        observation: this.buildAgentObservation(agent),
+        fallbackDecisionFactory: () => chooseFallbackDecision(this.buildAgentObservation(agent)),
+      }).then((result) => {
+        const decision = normalizeDecision(result, this.buildAgentObservation(agent));
+        const finalDecision = decision || chooseFallbackDecision(this.buildAgentObservation(agent));
+        this.applyAgentDecision(agent, finalDecision, result?.meta?.provider || 'agent');
+      }).catch((error) => {
+        this.logger.error(`Agent ${agent.id} decision failed:`, error.message);
+        const fallbackObs = this.buildAgentObservation(agent);
+        const fallback = chooseFallbackDecision(fallbackObs);
+        this.applyAgentDecision(agent, fallback, 'fallback');
+        agent.lastError = error.message;
+      }).finally(() => {
+        this.pendingAgentDecisions.delete(agent.id);
+      });
+    }
+  }
+
+  applyAgentDecision(agent, decision, source) {
+    const now = Date.now();
+    agent.lastDecisionAt = now;
+    agent.lastDecisionSource = source;
+    agent.nextDecisionAt = now + config.AI_DECISION_INTERVAL_MS;
+
+    if (agent.status === 'dead') {
+      agent.nextDecisionAt = Math.max(agent.nextDecisionAt, agent.respawnAt || (now + config.AI_DECISION_INTERVAL_MS));
+      return;
+    }
+
+    agent.lastError = null;
+
+    if (decision.speech) {
+      agent.speech = decision.speech;
+      agent.speechExpiresAt = now + PLAYER_SPEECH_DURATION_MS;
+    }
+
+    switch (decision.action) {
+      case 'move_to': {
+        const target = getTargetById(this.state.world, decision.targetId);
+        if (!target) {
+          agent.status = 'idle';
+          agent.currentAction = 'wait';
+          agent.movementTargetId = null;
+          agent.movementRoute = [];
+          return;
+        }
+
+        agent.movementTargetId = decision.targetId;
+        agent.movementReplanCount = 0;
+        const route = computeAiRoute(
+          this.state.world,
+          agent.position,
+          target.position,
+          PLAYER_COLLISION_RADIUS,
+        );
+        if (route.length === 0) {
+          agent.status = 'idle';
+          agent.currentAction = 'wait';
+          agent.movementTargetId = null;
+          agent.movementRoute = [];
+          agent.nextDecisionAt = now + 350;
+          return;
+        }
+        agent.movementRoute = route;
+        agent.movementRouteIndex = 0;
+        agent.movementStuckTicks = 0;
+        agent.status = 'walking';
+        agent.currentAction = 'move_to';
+
+        agent.recentActions.push(createActionMemoryEntry('move_to', decision.targetId));
+        if (agent.recentActions.length > AI_ACTION_MEMORY_SIZE) {
+          agent.recentActions.shift();
+        }
+        break;
+      }
+      case 'drink_water':
+        this.performDrink(agent, 'agent_drink_water', {
+          userId: agent.id, userName: agent.name, userAgent: 'backend-agent', details: `agent_id=${agent.id}`,
+        });
+        agent.recentActions.push(createActionMemoryEntry('drink_water'));
+        if (agent.recentActions.length > AI_ACTION_MEMORY_SIZE) agent.recentActions.shift();
+        break;
+      case 'pick_fruit':
+        this.performPickFruit(agent, 'agent_pick_fruit', {
+          userId: agent.id, userName: agent.name, userAgent: 'backend-agent', details: `agent_id=${agent.id}`,
+        });
+        agent.recentActions.push(createActionMemoryEntry('pick_fruit'));
+        if (agent.recentActions.length > AI_ACTION_MEMORY_SIZE) agent.recentActions.shift();
+        break;
+      case 'eat_fruit':
+        this.performEatFruit(agent, 'agent_eat_fruit', {
+          userId: agent.id, userName: agent.name, userAgent: 'backend-agent', details: `agent_id=${agent.id}`,
+        });
+        agent.recentActions.push(createActionMemoryEntry('eat_fruit'));
+        if (agent.recentActions.length > AI_ACTION_MEMORY_SIZE) agent.recentActions.shift();
+        break;
+      default:
+        agent.status = 'idle';
+        agent.currentAction = 'wait';
+        agent.recentActions.push(createActionMemoryEntry('wait'));
+        if (agent.recentActions.length > AI_ACTION_MEMORY_SIZE) agent.recentActions.shift();
+        break;
+    }
+  }
+
+  buildAgentObservation(agent) {
+    const now = Date.now();
+    const availableActions = this.getAvailableActions(agent, now);
+    const targets = [
+      {
+        id: LAKE.id,
+        type: 'lake',
+        distance: roundNumber(distanceBetween(agent.position, this.state.world.lake.position), 1),
+        applesRemaining: null,
+      },
+      ...this.state.world.trees
+        .filter((tree) => tree.applesRemaining > 0)
+        .map((tree) => ({
+          id: tree.id,
+          type: 'tree',
+          distance: roundNumber(distanceBetween(agent.position, tree.position), 1),
+          applesRemaining: tree.applesRemaining,
+        }))
+        .sort((left, right) => left.distance - right.distance),
+    ];
+
+    return {
+      self: {
+        position: buildRoundedPosition(agent.position),
+        food: roundNumber(agent.inventory.food, 1),
+        water: roundNumber(agent.inventory.water, 1),
+        apples: agent.inventory.apples,
+        score: Math.max(0, Math.trunc(agent.score || 0)),
+        status: agent.status,
+        cooldown_ms: Math.max(0, agent.actionCooldownUntil - now),
+      },
+      recent_actions: agent.recentActions.map((entry) => ({
+        action: entry.action,
+        target_id: entry.target_id,
+      })),
+      available_actions: availableActions,
+      current_target_id: agent.movementTargetId,
+      world: {
+        bounds: this.state.world.bounds,
+        lake_radius: this.state.world.lake.radius,
+        healthy_threshold: SCORE_HEALTHY_THRESHOLD,
+        death_at_zero: true,
+        respawn_delay_ms: RESPAWN_DELAY_MS,
+      },
+      targets,
+    };
+  }
+
+  advanceAgentMovement(agent, deltaSeconds, now) {
+    if (agent.currentAction !== 'move_to' || !agent.movementTargetId) {
+      return;
+    }
+
+    if (!agent.movementRoute || agent.movementRouteIndex >= agent.movementRoute.length) {
+      agent.status = 'idle';
+      agent.currentAction = 'wait';
+      agent.movementTargetId = null;
+      agent.movementRoute = [];
+      return;
+    }
+
+    const waypoint = agent.movementRoute[agent.movementRouteIndex];
+    const dx = waypoint.x - agent.position.x;
+    const dz = waypoint.z - agent.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+
+    if (dist < AI_ROUTE_WAYPOINT_RADIUS) {
+      agent.movementRouteIndex += 1;
+      if (agent.movementRouteIndex >= agent.movementRoute.length) {
+        // Arrived at final destination
+        const target = getTargetById(this.state.world, agent.movementTargetId);
+        if (target) {
+          const arrivalDist = distanceBetween(agent.position, target.position);
+          if (arrivalDist <= ARRIVAL_RADIUS + 1.0) {
+            agent.status = 'idle';
+            agent.currentAction = 'wait';
+            agent.movementTargetId = null;
+            agent.movementRoute = [];
+            return;
+          }
+        }
+        agent.status = 'idle';
+        agent.currentAction = 'wait';
+        agent.movementTargetId = null;
+        agent.movementRoute = [];
+      }
+      return;
+    }
+
+    const speed = config.AI_MOVE_SPEED;
+    const step = speed * deltaSeconds;
+    const normalizedDist = Math.max(dist, 0.001);
+    const moveX = (dx / normalizedDist) * Math.min(step, dist);
+    const moveZ = (dz / normalizedDist) * Math.min(step, dist);
+
+    agent.position.x += moveX;
+    agent.position.z += moveZ;
+    agent.rotationY = Math.atan2(dx, dz);
+
+    const resolved = resolveWalkablePosition(this.state.world, agent.position, agent.position);
+    agent.position.x = resolved.x;
+    agent.position.y = resolved.y;
+    agent.position.z = resolved.z;
   }
 
   buildObservation() {
