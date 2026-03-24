@@ -52,3 +52,8 @@ auxiliares/
 # Scripts Utilitários
 kill-8080.bat
 kill-8080.ps1
+
+# Ignore pastas iniciadas com numerais, pasta olds e documento do projeto
+[0-9]*/
+olds/
+GardenQuest Projeto Detalhado.html
