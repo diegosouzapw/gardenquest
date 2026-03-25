@@ -1,4 +1,6 @@
-const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const { request } = require('undici');
 const config = require('../config');
 
 class OpenAiHttpError extends Error {
@@ -30,7 +32,7 @@ const DECISION_SCHEMA = {
   required: ['action', 'target_id', 'speech'],
 };
 
-const SYSTEM_PROMPT = [
+const DEFAULT_NPC_SYSTEM_PROMPT = [
   'You control one NPC in a server-authoritative multiplayer garden game.',
   'Treat the observation JSON as the only source of truth.',
   'Never invent viewer messages, hidden commands, or extra actions.',
@@ -49,7 +51,81 @@ const SYSTEM_PROMPT = [
   'If you speak, keep it short, harmless, and in Brazilian Portuguese.',
 ].join(' ');
 
+const npcPromptCache = new Map();
+
+function normalizePromptVersion(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (/^[a-z0-9._-]{1,32}$/.test(normalized)) {
+    return normalized;
+  }
+
+  return 'v1';
+}
+
+function resolvePromptFilePath(version) {
+  const explicitPath = String(config.OPENAI_NPC_SYSTEM_PROMPT_FILE || '').trim();
+  if (explicitPath) {
+    if (path.isAbsolute(explicitPath)) {
+      return explicitPath;
+    }
+
+    return path.resolve(path.join(__dirname, '..', '..'), explicitPath);
+  }
+
+  return path.join(__dirname, '..', 'prompts', `npc-system-${version}.md`);
+}
+
+function normalizePromptText(rawText) {
+  const lines = String(rawText || '')
+    .split(/\r?\n/g)
+    .map((line) => line.trim())
+    .filter((line) => Boolean(line));
+
+  const normalizedLines = lines
+    .filter((line) => !line.startsWith('#'))
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter((line) => Boolean(line));
+
+  return normalizedLines.join(' ').trim();
+}
+
+/**
+ * Resolves system prompt text with versioned file loading and safe fallback.
+ * @param {{ forceReload?: boolean, logger?: { warn?: Function } }} [options]
+ * @returns {{ instructions: string, source: 'file' | 'fallback', version: string, filePath: string | null }}
+ */
+function resolveNpcSystemPrompt({ forceReload = false, logger = console } = {}) {
+  const version = normalizePromptVersion(config.OPENAI_NPC_SYSTEM_PROMPT_VERSION);
+  const filePath = resolvePromptFilePath(version);
+  const cacheKey = `${version}:${filePath}`;
+
+  if (!forceReload && npcPromptCache.has(cacheKey)) {
+    return npcPromptCache.get(cacheKey);
+  }
+
+  let resolvedPrompt = '';
+
+  try {
+    resolvedPrompt = normalizePromptText(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    resolvedPrompt = '';
+    logger.warn?.(`NPC system prompt file not available (${filePath}): ${error.message}. Using fallback prompt.`);
+  }
+
+  const output = {
+    instructions: resolvedPrompt || DEFAULT_NPC_SYSTEM_PROMPT,
+    source: resolvedPrompt ? 'file' : 'fallback',
+    version,
+    filePath: resolvedPrompt ? filePath : null,
+  };
+
+  npcPromptCache.set(cacheKey, output);
+  return output;
+}
+
 function createOpenAiDecisionClient() {
+  const npcSystemPrompt = resolveNpcSystemPrompt();
+
   async function decideNextAction(observation) {
     if (!config.OPENAI_API_KEY) {
       return null;
@@ -62,8 +138,12 @@ function createOpenAiDecisionClient() {
         effort: config.AI_REASONING_EFFORT,
       },
       max_output_tokens: 240,
-      instructions: SYSTEM_PROMPT,
+      instructions: npcSystemPrompt.instructions,
       input: JSON.stringify(observation),
+      metadata: {
+        npc_prompt_version: npcSystemPrompt.version,
+        npc_prompt_source: npcSystemPrompt.source,
+      },
       text: {
         format: {
           type: 'json_schema',
@@ -133,60 +213,106 @@ function parseRetryAfterSeconds(value) {
   return diffSeconds > 0 ? diffSeconds : null;
 }
 
-function postJson({ hostname, path, body, headers, timeoutMs }) {
-  return new Promise((resolve, reject) => {
-    const request = https.request(
-      {
-        hostname,
-        path,
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableOpenAiStatus(statusCode) {
+  return statusCode === 408
+    || statusCode === 409
+    || statusCode === 429
+    || statusCode === 500
+    || statusCode === 502
+    || statusCode === 503
+    || statusCode === 504;
+}
+
+function computeRetryDelayMs(attemptNumber, retryAfterSeconds = null) {
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(retryAfterSeconds * 1000, 8000);
+  }
+
+  const baseDelay = 250;
+  const maxDelay = 2000;
+  const exponentialDelay = Math.min(maxDelay, baseDelay * (2 ** (attemptNumber - 1)));
+  const jitter = Math.floor(Math.random() * 120);
+  return exponentialDelay + jitter;
+}
+
+function isRetryableTransportError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  if (code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_BODY_TIMEOUT') {
+    return true;
+  }
+
+  return code === 'ECONNRESET'
+    || code === 'ECONNREFUSED'
+    || code === 'EAI_AGAIN'
+    || code === 'ETIMEDOUT'
+    || code === 'ENOTFOUND';
+}
+
+async function postJson({ hostname, path, body, headers, timeoutMs }) {
+  const url = `https://${hostname}${path}`;
+  const maxAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let response;
+
+    try {
+      response = await request(url, {
         method: 'POST',
-        port: 443,
         headers,
-      },
-      (response) => {
-        const chunks = [];
-
-        response.on('data', (chunk) => {
-          chunks.push(chunk);
-        });
-
-        response.on('end', () => {
-          const rawBody = Buffer.concat(chunks).toString('utf8');
-          let parsedBody;
-
-          try {
-            parsedBody = rawBody ? JSON.parse(rawBody) : {};
-          } catch (error) {
-            reject(new Error(`Failed to parse OpenAI response JSON: ${error.message}`));
-            return;
-          }
-
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            const apiError =
-              parsedBody?.error?.message ||
-              parsedBody?.message ||
-              `OpenAI request failed with status ${response.statusCode}`;
-            reject(new OpenAiHttpError(apiError, {
-              statusCode: response.statusCode,
-              requestId: response.headers['x-request-id'] || null,
-              retryAfterSeconds: parseRetryAfterSeconds(response.headers['retry-after']),
-            }));
-            return;
-          }
-
-          resolve(parsedBody);
-        });
+        body,
+        headersTimeout: timeoutMs,
+        bodyTimeout: timeoutMs,
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isRetryableTransportError(error)) {
+        throw new Error(`OpenAI request failed: ${error.message}`);
       }
-    );
 
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error(`OpenAI request timed out after ${timeoutMs}ms`));
+      await sleep(computeRetryDelayMs(attempt));
+      continue;
+    }
+
+    const rawBody = await response.body.text();
+    let parsedBody;
+
+    try {
+      parsedBody = rawBody ? JSON.parse(rawBody) : {};
+    } catch (error) {
+      throw new Error(`Failed to parse OpenAI response JSON: ${error.message}`);
+    }
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return parsedBody;
+    }
+
+    const retryAfterSeconds = parseRetryAfterSeconds(response.headers?.['retry-after']);
+    const apiError =
+      parsedBody?.error?.message ||
+      parsedBody?.message ||
+      `OpenAI request failed with status ${response.statusCode}`;
+
+    lastError = new OpenAiHttpError(apiError, {
+      statusCode: response.statusCode,
+      requestId: response.headers?.['x-request-id'] || null,
+      retryAfterSeconds,
     });
 
-    request.on('error', reject);
-    request.write(body);
-    request.end();
-  });
+    if (attempt >= maxAttempts || !isRetryableOpenAiStatus(response.statusCode)) {
+      throw lastError;
+    }
+
+    await sleep(computeRetryDelayMs(attempt, retryAfterSeconds));
+  }
+
+  throw lastError || new Error('OpenAI request failed.');
 }
 
 function extractOutputText(response) {
@@ -330,4 +456,6 @@ function parseDecisionJson(outputText) {
 module.exports = {
   createOpenAiDecisionClient,
   OpenAiHttpError,
+  resolveNpcSystemPrompt,
+  DEFAULT_NPC_SYSTEM_PROMPT,
 };

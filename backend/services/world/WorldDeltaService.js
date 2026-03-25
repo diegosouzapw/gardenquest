@@ -37,14 +37,20 @@ function buildSnapshotDelta(previousSnapshot, nextSnapshot, { selfPayload = unde
   const actorDelta = computeActorDelta(prev.players, next.players);
   if (actorDelta.upsert.length > 0 || actorDelta.removeIds.length > 0) delta.players = actorDelta;
   if (stableSerialize(prev.ai) !== stableSerialize(next.ai)) delta.ai = cloneJson(next.ai, null);
-  const prevW = prev.world || null, nextW = next.world || null;
-  if (stableSerialize(prevW) !== stableSerialize(nextW)) {
-    delta.world = {};
-    if (stableSerialize(prevW?.trees) !== stableSerialize(nextW?.trees)) delta.world.trees = cloneJson(nextW?.trees, []);
-    if (stableSerialize(prevW?.droppedApples) !== stableSerialize(nextW?.droppedApples)) delta.world.droppedApples = cloneJson(nextW?.droppedApples, []);
-    if (stableSerialize(prevW?.graves) !== stableSerialize(nextW?.graves)) delta.world.graves = cloneJson(nextW?.graves, []);
-    if (stableSerialize(prevW?.soccer) !== stableSerialize(nextW?.soccer)) delta.world.soccer = cloneJson(nextW?.soccer, null);
-    if (prevW?.bounds !== nextW?.bounds) delta.world.bounds = Number(nextW?.bounds) || 0;
+  const prevW = prev.world || null;
+  const nextW = next.world || null;
+  const worldDelta = {};
+  if (stableSerialize(prevW?.trees) !== stableSerialize(nextW?.trees)) worldDelta.trees = cloneJson(nextW?.trees, []);
+  if (stableSerialize(prevW?.droppedApples) !== stableSerialize(nextW?.droppedApples)) worldDelta.droppedApples = cloneJson(nextW?.droppedApples, []);
+  if (stableSerialize(prevW?.swords) !== stableSerialize(nextW?.swords)) worldDelta.swords = cloneJson(nextW?.swords, []);
+  if (stableSerialize(prevW?.bows) !== stableSerialize(nextW?.bows)) worldDelta.bows = cloneJson(nextW?.bows, []);
+  if (stableSerialize(prevW?.arrows) !== stableSerialize(nextW?.arrows)) worldDelta.arrows = cloneJson(nextW?.arrows, []);
+  if (stableSerialize(prevW?.elevators) !== stableSerialize(nextW?.elevators)) worldDelta.elevators = cloneJson(nextW?.elevators, []);
+  if (stableSerialize(prevW?.graves) !== stableSerialize(nextW?.graves)) worldDelta.graves = cloneJson(nextW?.graves, []);
+  if (stableSerialize(prevW?.soccer) !== stableSerialize(nextW?.soccer)) worldDelta.soccer = cloneJson(nextW?.soccer, null);
+  if (prevW?.bounds !== nextW?.bounds) worldDelta.bounds = Number(nextW?.bounds) || 0;
+  if (Object.keys(worldDelta).length > 0) {
+    delta.world = worldDelta;
   }
   if (stableSerialize(prev.leaderboard) !== stableSerialize(next.leaderboard)) delta.leaderboard = cloneJson(next.leaderboard, null);
   if (stableSerialize(prev.soccerLeaderboard) !== stableSerialize(next.soccerLeaderboard)) delta.soccerLeaderboard = cloneJson(next.soccerLeaderboard, null);

@@ -3,6 +3,11 @@ const { createAgentProvider } = require('../../agents/providers/AgentProviderFac
 const { AgentGovernanceService, buildProviderKey } = require('./AgentGovernanceService');
 const { AgentModerationService } = require('./AgentModerationService');
 
+/**
+ * Estimates token usage from a JSON-serializable payload with a conservative 4 chars/token heuristic.
+ * @param {unknown} value
+ * @returns {number}
+ */
 function estimateTokensFromJson(value) {
   try {
     const text = typeof value === 'string' ? value : JSON.stringify(value || {});
@@ -12,6 +17,9 @@ function estimateTokensFromJson(value) {
   }
 }
 
+/**
+ * Coordinates decision execution for both official NPC and player-owned agents.
+ */
 class AgentDecisionService {
   constructor({ agentRepository = null, secretVault = null, governanceService = null, moderationService = null, logger = console } = {}) {
     this.agentRepository = agentRepository;
@@ -21,6 +29,11 @@ class AgentDecisionService {
     this.moderationService = moderationService || new AgentModerationService({ logger });
   }
 
+  /**
+   * Executes the official platform NPC decision flow with moderation and run accounting.
+   * @param {{ observation: unknown, fallbackDecisionFactory?: (error: Error) => object }} params
+   * @returns {Promise<object>}
+   */
   async decideOfficialNpc({ observation, fallbackDecisionFactory }) {
     const officialNpc = {
       id: 'npc-gardener-01',
@@ -93,6 +106,11 @@ class AgentDecisionService {
     }
   }
 
+  /**
+   * Executes a decision cycle for a player-owned agent.
+   * @param {{ agentId: string, observation: unknown, fallbackDecisionFactory?: ((error: Error) => object) | null }} params
+   * @returns {Promise<object>}
+   */
   async decideForAgent({ agentId, observation, fallbackDecisionFactory = null }) {
     if (!this.agentRepository) {
       throw new Error('AgentDecisionService requires an agent repository');
@@ -236,6 +254,21 @@ class AgentDecisionService {
     }
   }
 
+  /**
+   * Persists a run telemetry record when the repository supports it.
+   * @param {{
+   *   agentId: string,
+   *   status: string,
+   *   errorCode?: string | null,
+   *   latencyMs?: number | null,
+   *   providerMode?: string | null,
+   *   providerName?: string | null,
+   *   estimatedInputTokens?: number | null,
+   *   estimatedOutputTokens?: number | null,
+   *   countTowardsBudget?: boolean
+   * }} params
+   * @returns {Promise<void>}
+   */
   async recordRun({ agentId, status, errorCode = null, latencyMs = null, providerMode = null, providerName = null, estimatedInputTokens = null, estimatedOutputTokens = null, countTowardsBudget = true }) {
     if (!this.agentRepository?.recordAgentRun) {
       return;

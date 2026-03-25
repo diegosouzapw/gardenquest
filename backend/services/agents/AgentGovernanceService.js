@@ -12,6 +12,12 @@ function buildAgentKey(agent) {
   return String(agent?.id || '').trim();
 }
 
+/**
+ * Builds a stable provider circuit key for governance tracking.
+ * @param {{ mode?: string, provider?: string }} agent
+ * @param {{ baseUrl?: string } | null} [endpointConfig=null]
+ * @returns {string}
+ */
 function buildProviderKey(agent, endpointConfig = null) {
   if (agent?.mode === 'remote_endpoint' && endpointConfig?.baseUrl) {
     return `remote:${endpointConfig.baseUrl}`;
@@ -19,6 +25,9 @@ function buildProviderKey(agent, endpointConfig = null) {
   return `${agent?.mode || 'unknown'}:${String(agent?.provider || 'unknown').toLowerCase()}`;
 }
 
+/**
+ * Enforces runtime governance constraints (rate limits, budget and circuit breakers) for agents.
+ */
 class AgentGovernanceService {
   constructor({ agentRepository, logger = console, now = () => Date.now() } = {}) {
     this.agentRepository = agentRepository;
@@ -28,6 +37,18 @@ class AgentGovernanceService {
     this.providerState = new Map();
   }
 
+  /**
+   * Resolves effective governance policy for an agent.
+   * @param {{ policyJson?: object }} agent
+   * @returns {{
+   *   dailyRunBudget: number,
+   *   minDecisionIntervalMs: number,
+   *   failureThreshold: number,
+   *   cooldownMs: number,
+   *   providerFailureThreshold: number,
+   *   providerCooldownMs: number
+   * }}
+   */
   getPolicy(agent) {
     const raw = agent?.policyJson && typeof agent.policyJson === 'object' ? agent.policyJson : {};
     return {
@@ -63,6 +84,12 @@ class AgentGovernanceService {
     return error;
   }
 
+  /**
+   * Asserts whether an agent can execute now.
+   * Throws an error with HTTP 429 metadata when blocked.
+   * @param {{ agent: { id: string, mode?: string }, endpointConfig?: object | null }} params
+   * @returns {Promise<{ policy: object, providerKey: string, agentState: object, providerState: object }>}
+   */
   async assertCanRun({ agent, endpointConfig = null }) {
     const policy = this.getPolicy(agent);
     const now = this.now();
@@ -108,6 +135,11 @@ class AgentGovernanceService {
     };
   }
 
+  /**
+   * Resets agent and provider circuit states after a successful decision.
+   * @param {{ agent: { id: string }, providerKey: string }} params
+   * @returns {void}
+   */
   onSuccess({ agent, providerKey }) {
     const now = this.now();
     const agentState = this.getState(this.agentState, buildAgentKey(agent));
@@ -122,6 +154,11 @@ class AgentGovernanceService {
     providerState.lastErrorCode = null;
   }
 
+  /**
+   * Registers a provider/agent failure and opens circuits when thresholds are reached.
+   * @param {{ agent: { id: string }, providerKey: string, error: Error & { code?: string, statusCode?: number }, policy?: object | null }} params
+   * @returns {void}
+   */
   onFailure({ agent, providerKey, error, policy = null }) {
     const resolvedPolicy = policy || this.getPolicy(agent);
     const now = this.now();

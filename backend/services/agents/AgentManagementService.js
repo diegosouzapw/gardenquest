@@ -126,22 +126,63 @@ class AgentManagementService {
       throw error;
     }
 
+    let parsedBaseUrl;
     try {
-      const parsed = new URL(baseUrl);
-      if (!['https:', 'http:'].includes(parsed.protocol)) {
-        throw new Error('Invalid protocol');
+      parsedBaseUrl = new URL(baseUrl);
+      if (parsedBaseUrl.protocol !== 'https:') {
+        const error = new Error('baseUrl must use https');
+        error.statusCode = 400;
+        throw error;
       }
     } catch (parseError) {
-      const error = new Error('baseUrl must be a valid absolute URL');
+      const error = new Error(parseError?.statusCode === 400 ? parseError.message : 'baseUrl must be a valid absolute URL');
       error.statusCode = 400;
       throw error;
     }
 
+    const normalizedAuthMode = endpoint?.authMode === 'bearer' ? 'bearer' : 'none';
+    const existingEndpoint = await this.agentRepository.getAgentEndpointByAgentId(agentId).catch(() => null);
+    const inputAuthSecret = typeof endpoint?.authSecret === 'string' ? endpoint.authSecret.trim() : '';
+    let authSecretPayload = null;
+    let authSecretFingerprint = null;
+
+    if (normalizedAuthMode === 'bearer') {
+      if (inputAuthSecret) {
+        if (!this.secretVault) {
+          const error = new Error('Endpoint bearer auth is disabled until AGENT_SECRET_MASTER_KEY_HEX is configured');
+          error.statusCode = 503;
+          throw error;
+        }
+
+        const encrypted = this.secretVault.encryptSecret(inputAuthSecret);
+        authSecretPayload = encrypted.payload;
+        authSecretFingerprint = encrypted.fingerprint;
+      } else if (existingEndpoint?.authSecretPayload && existingEndpoint?.authSecretFingerprint) {
+        authSecretPayload = existingEndpoint.authSecretPayload;
+        authSecretFingerprint = existingEndpoint.authSecretFingerprint;
+      } else if (existingEndpoint?.authSecret) {
+        if (!this.secretVault) {
+          const error = new Error('Endpoint bearer auth is disabled until AGENT_SECRET_MASTER_KEY_HEX is configured');
+          error.statusCode = 503;
+          throw error;
+        }
+
+        const encrypted = this.secretVault.encryptSecret(existingEndpoint.authSecret);
+        authSecretPayload = encrypted.payload;
+        authSecretFingerprint = encrypted.fingerprint;
+      } else {
+        const error = new Error('authSecret is required when authMode is bearer');
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
     await this.agentRepository.saveAgentEndpoint({
       agentId,
-      baseUrl,
-      authMode: endpoint?.authMode === 'bearer' ? 'bearer' : 'none',
-      authSecret: typeof endpoint?.authSecret === 'string' ? endpoint.authSecret.trim() : null,
+      baseUrl: parsedBaseUrl.toString(),
+      authMode: normalizedAuthMode,
+      authSecretPayload,
+      authSecretFingerprint,
       timeoutMs: endpoint?.timeoutMs,
     });
 

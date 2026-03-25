@@ -134,3 +134,24 @@ Para ambientes com API em porta nao padrao:
 - `/api/v1/system/dashboard`: logs institucionais.
 - `/api/v1/system/ops-dashboard`: sessoes, fila, estado de agentes.
 - dashboard web: `frontend/public/dashboard.html`.
+
+---
+
+## 12. Contrato HTTP (OpenAPI)
+
+- Arquivo canonico do contrato: `docs/openapi.yaml`.
+- Sempre que uma rota, payload ou codigo de erro mudar em `backend/routes/*`, atualize a spec no mesmo PR.
+- Regra pratica: nao mergear alteracao de API sem diff correspondente em `docs/openapi.yaml`.
+
+---
+
+## 13. Governanca de contribuicao
+
+- Processo de contribuicao: `CONTRIBUTING.md`.
+- Historico de mudancas: `CHANGELOG.md`.
+- Ownership de revisao: `CODEOWNERS`.
+
+Regras praticas:
+1. Toda mudanca funcional relevante deve atualizar o `CHANGELOG.md`.
+2. PR sem validacoes minimas (`check:env`, `lint`, `test:tasks`) nao deve ser mergeado.
+3. Mudancas de API exigem update de `docs/openapi.yaml` no mesmo PR.

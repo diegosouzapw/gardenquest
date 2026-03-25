@@ -92,6 +92,13 @@ backend/
 │   ├── auth-sessions.js     → sessoes revogaveis
 │   └── supabase-schema.sql  → schema canonico
 └── scripts/check-env.js     → validacao de ambiente
+
+archive/
+├── README.md                → politica de artefatos legados
+├── host.py                  → servidor Python legado (arquivado)
+├── GardenQuest Projeto Detalhado.html
+├── legacy/                  → placeholder para materiais legados adicionais
+└── olds/                    → snapshots e pacotes historicos
 ```
 
 ## Requisitos
@@ -136,6 +143,9 @@ backend/
 | `WORLD_RUNTIME_SNAPSHOT_TTL_MS` | `15000` | V6 |
 | `WORLD_EVENT_STREAM_ENABLED` | `true` | V7 |
 | `WORLD_EVENT_STREAM_SNAPSHOT_EVERY` | `1` | V8 |
+| `WORLD_EVENT_STREAM_MAX_SUBSCRIBERS` | `300` | V12 |
+| `WORLD_EVENT_STREAM_MAX_PUBLIC_SUBSCRIBERS` | `220` | V12 |
+| `WORLD_EVENT_STREAM_MAX_PLAYER_SUBSCRIBERS` | `220` | V12 |
 | `WORLD_RUNTIME_BUS_ENABLED` | `true` | V9 |
 | `AGENT_DEFAULT_DAILY_RUN_BUDGET` | `5000` | V10 |
 | `AGENT_DEFAULT_MIN_DECISION_INTERVAL_MS` | `2000` | V10 |
@@ -143,6 +153,8 @@ backend/
 | `AGENT_SPEECH_MODERATION_ENABLED` | `true` | V11 |
 | `AGENT_SPEECH_ALLOW_URLS` | `false` | V11 |
 | `AGENT_SPEECH_BLOCKLIST` | `(vazio)` | V11 |
+| `OPENAI_NPC_SYSTEM_PROMPT_VERSION` | `v1` | V12 |
+| `OPENAI_NPC_SYSTEM_PROMPT_FILE` | `(vazio)` | V12 |
 
 Veja `backend/config/index.js` para a lista completa.
 
@@ -196,6 +208,19 @@ Validacao automatizada das tasks:
 npm --prefix backend run test:tasks
 ```
 
+Lint (backend):
+
+```bash
+npm --prefix backend run lint
+```
+
+Formatacao (backend):
+
+```bash
+npm --prefix backend run format
+npm --prefix backend run format:check
+```
+
 Se a API estiver em porta diferente de `8080`, abra uma vez o frontend com override:
 
 ```text
@@ -210,6 +235,39 @@ Depois, o valor fica salvo no browser (`img_platform_api_url`).
 - `backend/Dockerfile` e `frontend/Dockerfile`: imagens separadas
 - Docs sobre Secret Manager em `docs/`
 - `docs/local-development.md`: guia completo para dev local
+
+### Deploy via shell (Cloud Run)
+
+Uso:
+
+```bash
+./deploy.sh <ENV_FILE> <TARGET> <PROJECT_ID> <REGION>
+```
+
+- `ENV_FILE`: caminho do arquivo de ambiente (`.env.production`, `.env.staging`, etc.)
+- `TARGET`: `all`, `backend` ou `frontend`
+- `PROJECT_ID`: projeto GCP alvo
+- `REGION`: regiao Cloud Run (default: `southamerica-east1`)
+
+Exemplo:
+
+```bash
+./deploy.sh .env.production all meu-projeto-gcp southamerica-east1
+```
+
+Validacao de sintaxe antes do deploy:
+
+```bash
+bash -n deploy.sh
+```
+
+## CI
+
+Pipeline minimo em GitHub Actions:
+
+- arquivo: `.github/workflows/ci.yml`
+- etapas: `check:env`, `lint`, `test:tasks`
+- runtime: Node.js 20
 
 ## Seguranca
 
@@ -228,13 +286,21 @@ Depois, o valor fica salvo no browser (`img_platform_api_url`).
 - `docs/EVOLUTION_ROADMAP.md` — roadmap completo de V0 a V12
 - `docs/DEVELOPER_GUIDE.md` — guia de integracao de novos jogos
 - `docs/USER_GUIDE.md` — guia passo a passo para rodar e usar a solucao
+- `docs/openapi.yaml` — contrato OpenAPI 3.0.3 das rotas HTTP do backend
 - `docs/implementation/` — plano detalhado de cada fase
 - `docs/implementation/RELATORIO_REVALIDACAO_2026-03-24.md` — auditoria tecnica completa da implementacao
 - `docs/strategy/` — documentacao estrategica (Fase 1)
 - `docs/evolution/` — documentacao de evolucao (Fase 2)
 - `docs/security-review.md` — revisao de seguranca
+- `archive/README.md` — criterio e escopo dos artefatos historicos fora do runtime
 
 ## API de Agentes
+
+Contrato completo da API:
+
+```text
+docs/openapi.yaml
+```
 
 ```
 GET    /api/v1/agents           → Listar agentes do usuario

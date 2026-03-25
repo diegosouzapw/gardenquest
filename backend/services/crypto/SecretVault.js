@@ -15,26 +15,28 @@ class SecretVault {
     this.masterKey = masterKey;
   }
 
-  async storeAgentSecret(agentId, secretPlaintext) {
+  encryptSecret(secretPlaintext) {
+    if (typeof secretPlaintext !== 'string' || !secretPlaintext.trim()) {
+      throw new Error('Secret plaintext must be a non-empty string');
+    }
+
+    const normalizedSecret = secretPlaintext.trim();
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', this.masterKey, iv);
-    const encrypted = Buffer.concat([cipher.update(secretPlaintext, 'utf8'), cipher.final()]);
+    const encrypted = Buffer.concat([cipher.update(normalizedSecret, 'utf8'), cipher.final()]);
     const authTag = cipher.getAuthTag();
-
-    const payload = Buffer.concat([iv, authTag, encrypted]).toString('base64');
-    const fingerprint = this.buildFingerprint(secretPlaintext);
-
-    await this.agentRepository.saveAgentSecret({ agentId, payload, fingerprint });
-    return { fingerprint };
+    return {
+      payload: Buffer.concat([iv, authTag, encrypted]).toString('base64'),
+      fingerprint: this.buildFingerprint(normalizedSecret),
+    };
   }
 
-  async getAgentSecret(agentId) {
-    const record = await this.agentRepository.getAgentSecret(agentId);
-    if (!record?.payload) {
+  decryptPayload(payload) {
+    if (typeof payload !== 'string' || !payload.trim()) {
       return null;
     }
 
-    const raw = Buffer.from(record.payload, 'base64');
+    const raw = Buffer.from(payload, 'base64');
     const iv = raw.subarray(0, 12);
     const authTag = raw.subarray(12, 28);
     const encrypted = raw.subarray(28);
@@ -43,6 +45,24 @@ class SecretVault {
     decipher.setAuthTag(authTag);
     const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
     return decrypted.toString('utf8');
+  }
+
+  async storeAgentSecret(agentId, secretPlaintext) {
+    const encrypted = this.encryptSecret(secretPlaintext);
+    await this.agentRepository.saveAgentSecret({
+      agentId,
+      payload: encrypted.payload,
+      fingerprint: encrypted.fingerprint,
+    });
+    return { fingerprint: encrypted.fingerprint };
+  }
+
+  async getAgentSecret(agentId) {
+    const record = await this.agentRepository.getAgentSecret(agentId);
+    if (!record?.payload) {
+      return null;
+    }
+    return this.decryptPayload(record.payload);
   }
 
   buildFingerprint(secretPlaintext) {
