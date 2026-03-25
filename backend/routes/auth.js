@@ -4,6 +4,8 @@ const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 const config = require('../config');
 const { insertLog, upsertUser } = require('../database/postgres');
+const { normalizeEmail, normalizeText } = require('../shared/normalize');
+const { getRequestIp, getRequestUserAgent } = require('../shared/request');
 const {
   createAuthSession,
   getAuthSessionById,
@@ -18,34 +20,6 @@ const OAUTH_STATE_COOKIE_NAME = 'oauth_state';
 const COOKIE_MAX_AGE_MS = Math.max(60_000, Number(config.SESSION_COOKIE_MAX_AGE_MS) || (24 * 60 * 60 * 1000));
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
 const OAUTH_STATE_BASE_URL = 'https://frontend.local';
-
-function getRequestIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const rawIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || req.socket.remoteAddress || '';
-  return rawIp.split(',')[0].trim();
-}
-
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
-}
-
-function normalizeEmail(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim().toLowerCase();
-  return trimmed || null;
-}
 
 function normalizeFrontendPath(value, fallbackPath = '/hub.html') {
   if (typeof value !== 'string' || !value.trim()) {
@@ -136,7 +110,7 @@ function isAuthorizedAdminEmail(email) {
 
 function trackSilentEvent(req, event, user = null) {
   const ip = getRequestIp(req);
-  const userAgent = req.headers['user-agent'] || '';
+  const userAgent = getRequestUserAgent(req);
   insertLog({
     event,
     ip,
@@ -331,7 +305,7 @@ function createAuthRoutes({ gameEngine = null, worldGateway = null } = {}) {
         userEmail: normalizedUser.email || null,
         userName: normalizedUser.name || null,
         ip: getRequestIp(req),
-        userAgent: normalizeText(req.headers['user-agent'], 512) || null,
+        userAgent: getRequestUserAgent(req, 512) || null,
         expiresAt: new Date(Date.now() + COOKIE_MAX_AGE_MS),
       });
 

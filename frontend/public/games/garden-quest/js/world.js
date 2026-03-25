@@ -46,6 +46,10 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+function hasOwn(objectValue, key) {
+    return Boolean(objectValue) && Object.prototype.hasOwnProperty.call(objectValue, key);
+}
+
 function clonePoint(point) {
     return {
         x: Number(point?.x) || 0,
@@ -2167,6 +2171,48 @@ class World {
     setWorldBounds(bounds) {
         if (Number.isFinite(bounds) && bounds > 0) {
             this.bounds = bounds;
+        }
+    }
+
+    applyWorldPatch(worldPatch = {}) {
+        if (!worldPatch || typeof worldPatch !== 'object') {
+            return;
+        }
+
+        if (hasOwn(worldPatch, 'trees')) {
+            this.syncTreeState(worldPatch.trees);
+        }
+
+        if (hasOwn(worldPatch, 'droppedApples')) {
+            this.syncDroppedApples(worldPatch.droppedApples);
+        }
+
+        if (hasOwn(worldPatch, 'swords')) {
+            this.syncSwordPickups(worldPatch.swords);
+        }
+
+        if (hasOwn(worldPatch, 'bows')) {
+            this.syncBowPickups(worldPatch.bows);
+        }
+
+        if (hasOwn(worldPatch, 'arrows')) {
+            this.syncArrowProjectiles(worldPatch.arrows);
+        }
+
+        if (hasOwn(worldPatch, 'elevators')) {
+            this.syncElevators(worldPatch.elevators);
+        }
+
+        if (hasOwn(worldPatch, 'graves')) {
+            this.syncGraves(worldPatch.graves);
+        }
+
+        if (hasOwn(worldPatch, 'soccer')) {
+            this.syncSoccerState(worldPatch.soccer);
+        }
+
+        if (hasOwn(worldPatch, 'bounds')) {
+            this.setWorldBounds(worldPatch.bounds);
         }
     }
 

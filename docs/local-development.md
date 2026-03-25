@@ -422,3 +422,24 @@ Recomendacao:
 - local para desenvolvimento diario
 - staging para validar comportamento proximo da producao
 - producao com segredos isolados em Secret Manager
+
+## Validar e executar deploy via script
+
+Mesmo em maquina local, valide o script antes de usar:
+
+```bash
+bash -n deploy.sh
+```
+
+Formato do comando:
+
+```bash
+./deploy.sh <ENV_FILE> <TARGET> <PROJECT_ID> <REGION>
+```
+
+Exemplos:
+
+```bash
+./deploy.sh .env.staging backend meu-projeto-gcp southamerica-east1
+./deploy.sh .env.production all meu-projeto-gcp southamerica-east1
+```

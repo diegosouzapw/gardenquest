@@ -53,6 +53,18 @@ function createAgentRoutes({ agentService, authMiddleware }) {
 
   router.post('/:id/endpoint', async (req, res, next) => {
     try {
+      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+        return res.status(400).json({ error: 'Endpoint payload must be an object' });
+      }
+
+      if (req.body.baseUrl != null && typeof req.body.baseUrl !== 'string') {
+        return res.status(400).json({ error: 'baseUrl must be a string' });
+      }
+
+      if (req.body.authSecret != null && typeof req.body.authSecret !== 'string') {
+        return res.status(400).json({ error: 'authSecret must be a string' });
+      }
+
       const result = await agentService.configureEndpoint({
         ownerUserId: req.authUser.id,
         agentId: req.params.id,

@@ -1,4 +1,4 @@
-const https = require('https');
+const { request } = require('undici');
 const { AgentRuntime } = require('../contracts/AgentRuntime');
 const { normalizeLegacyDecision } = require('../schemas/agent-action');
 
@@ -117,43 +117,78 @@ class HostedApiKeyProvider extends AgentRuntime {
 
   postJson({ hostname, path, apiKey, payload, timeoutMs }) {
     const body = JSON.stringify(payload);
-    return new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname,
-        path,
-        method: 'POST',
-        port: 443,
-        timeout: timeoutMs,
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      }, (res) => {
-        const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
-        res.on('end', () => {
-          try {
-            const raw = Buffer.concat(chunks).toString('utf8');
-            const parsed = raw ? JSON.parse(raw) : {};
-            if (res.statusCode >= 400) {
-              const error = new Error(`Hosted provider error ${res.statusCode}`);
-              error.statusCode = res.statusCode;
-              error.providerBody = parsed;
-              return reject(error);
-            }
-            return resolve(parsed);
-          } catch (error) {
-            return reject(error);
-          }
-        });
-      });
+    const url = `https://${hostname}${path}`;
+    const maxAttempts = 3;
 
-      req.on('timeout', () => req.destroy(new Error('Hosted provider timeout')));
-      req.on('error', reject);
-      req.write(body);
-      req.end();
-    });
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const isRetryableStatus = (statusCode) => [408, 409, 429, 500, 502, 503, 504].includes(statusCode);
+    const isRetryableError = (error) => {
+      const code = String(error?.code || '').toUpperCase();
+      return code === 'UND_ERR_CONNECT_TIMEOUT'
+        || code === 'UND_ERR_HEADERS_TIMEOUT'
+        || code === 'UND_ERR_BODY_TIMEOUT'
+        || code === 'ECONNRESET'
+        || code === 'ECONNREFUSED'
+        || code === 'EAI_AGAIN'
+        || code === 'ETIMEDOUT'
+        || code === 'ENOTFOUND';
+    };
+
+    const computeDelay = (attempt) => Math.min(2000, 220 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 120);
+
+    return (async () => {
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let res;
+        try {
+          res = await request(url, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+            },
+            body,
+            headersTimeout: timeoutMs,
+            bodyTimeout: timeoutMs,
+          });
+        } catch (error) {
+          lastError = error;
+          if (attempt >= maxAttempts || !isRetryableError(error)) {
+            throw error;
+          }
+          await sleep(computeDelay(attempt));
+          continue;
+        }
+
+        const raw = await res.body.text();
+        let parsed = {};
+        try {
+          parsed = raw ? JSON.parse(raw) : {};
+        } catch (error) {
+          throw error;
+        }
+
+        if (res.statusCode >= 400) {
+          const error = new Error(`Hosted provider error ${res.statusCode}`);
+          error.statusCode = res.statusCode;
+          error.providerBody = parsed;
+          lastError = error;
+
+          if (attempt >= maxAttempts || !isRetryableStatus(res.statusCode)) {
+            throw error;
+          }
+
+          await sleep(computeDelay(attempt));
+          continue;
+        }
+
+        return parsed;
+      }
+
+      throw lastError || new Error('Hosted provider request failed');
+    })();
   }
 }
 

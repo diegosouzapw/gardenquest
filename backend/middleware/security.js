@@ -106,6 +106,11 @@ function setupSecurity(app) {
       .map(normalizeOrigin)
       .filter(Boolean)
   );
+  const cspConnectSrc = [
+    "'self'",
+    frontendOrigin,
+    ...(config.CSP_ALLOW_LOCAL_CONNECT_SRC ? ['http://localhost:8080', 'http://127.0.0.1:8080'] : []),
+  ].filter(Boolean);
 
   // Helmet - Security headers (CSP, HSTS, X-Frame-Options, etc.)
   app.use(helmet({
@@ -116,7 +121,7 @@ function setupSecurity(app) {
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'https:'],
-        connectSrc: ["'self'", 'http://localhost:8080', 'http://127.0.0.1:8080', frontendOrigin].filter(Boolean),
+        connectSrc: cspConnectSrc,
       },
     },
     crossOriginEmbedderPolicy: false,

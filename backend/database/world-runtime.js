@@ -2,6 +2,7 @@ const { getPool } = require('./postgres');
 
 const WORLD_RUNTIME_BUS_CHANNEL = 'world_runtime_bus';
 const WORLD_COMMAND_BUS_CHANNEL = 'world_command_bus';
+const ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES = Object.freeze(['dead_letter', 'error']);
 
 function normalizeCommandType(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -618,10 +619,10 @@ async function retryWorldCommandAdmin({ id, realmId = null, delayMs = 0, resetAt
         attempts = CASE WHEN $4::boolean THEN 0 ELSE attempts END
       WHERE id = $1
         AND ($2::text IS NULL OR realm_id = $2)
-        AND status IN ('dead_letter', 'error', 'done')
+        AND status = ANY($5::text[])
       RETURNING id, realm_id AS "realmId", status, attempts, max_attempts AS "maxAttempts"
     `,
-    [id, realmId, normalizedDelayMs, Boolean(resetAttempts)]
+    [id, realmId, normalizedDelayMs, Boolean(resetAttempts), ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES]
   );
 
   const row = result.rows[0] || null;
@@ -686,6 +687,7 @@ async function getWorldCommandQueueOverview(realmId) {
 }
 
 module.exports = {
+  ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES,
   WORLD_COMMAND_BUS_CHANNEL,
   WORLD_RUNTIME_BUS_CHANNEL,
   claimPendingWorldCommands,

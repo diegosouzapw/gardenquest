@@ -41,6 +41,9 @@ Data: 2026-03-21
 7. Faltavam arquivos de ignore padronizados para alguns contextos de build.
    - Correcao aplicada: criados `.dockerignore` e `.gcloudignore` na raiz e no `frontend/`.
 
+8. O `connect-src` do CSP incluia `localhost` mesmo fora de ambiente local.
+   - Correcao aplicada: `localhost` passou a ser adicionado ao `connectSrc` apenas quando `APP_ENV=local` (controlado por `CSP_ALLOW_LOCAL_CONNECT_SRC`).
+
 ## Itens revisados sem vazamento no codigo versionavel
 
 - Nao encontrei chaves reais embutidas no frontend estatico.

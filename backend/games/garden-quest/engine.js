@@ -13,6 +13,10 @@ const {
 const { createOpenAiDecisionClient } = require('../../services/openai-client');
 const { AgentDecisionService } = require('../../services/agents/AgentDecisionService');
 const { AgentWorldScheduler } = require('../../services/agents/AgentWorldScheduler');
+const { createCombatSystem } = require('./systems/combat');
+const { createInventorySystem } = require('./systems/inventory');
+const { createLeaderboardSystem } = require('./systems/leaderboard');
+const { createPhysicsSystem } = require('./systems/physics');
 const {
   createWorldState,
   getHouseTowerElevators,
@@ -1035,6 +1039,107 @@ class AiGameEngine {
       requestAgentDecisions: () => this.maybeRequestAgentDecisions(),
     });
     this.state = this.createInitialState();
+    this.systems = {
+      inventory: createInventorySystem({
+        constants: {
+          ACTION_COOLDOWN_MS,
+          ACTION_RADIUS,
+          APPLE_REGROW_INTERVAL_MS,
+          BOW_DEFAULT_ARROW_COUNT,
+          BOW_DROP_DISTANCE,
+          BOW_GROUND_OFFSET_Y,
+          BOW_PICKUP_RADIUS,
+          DRINK_AMOUNT,
+          DRINK_SCORE_POINTS,
+          DROPPED_APPLE_DROP_DISTANCE,
+          DROPPED_APPLE_GROUND_Y,
+          DROPPED_APPLE_PICKUP_RADIUS,
+          EAT_FRUIT_SCORE_POINTS,
+          FOOD_FROM_APPLE,
+          MAX_FOOD,
+          MAX_WATER,
+          SWORD_DROP_DISTANCE,
+          SWORD_GROUND_OFFSET_Y,
+          SWORD_PICKUP_RADIUS,
+          TOWER_ELEVATOR_COOLDOWN_MS,
+        },
+        helpers: {
+          buildPlayerLogContext,
+          clamp,
+          distanceBetween,
+          getNearbyTowerElevator,
+          resolveWalkablePosition,
+        },
+      }),
+      combat: createCombatSystem({
+        constants: {
+          ACTION_COOLDOWN_MS,
+          ACTOR_HIT_FLASH_DURATION_MS,
+          ARROW_APPLE_DAMAGE,
+          ARROW_FORWARD_OFFSET,
+          ARROW_HIT_MAX_Y_OFFSET,
+          ARROW_HIT_MIN_Y_OFFSET,
+          ARROW_HIT_RADIUS,
+          ARROW_PROJECTILE_LIFETIME_MS,
+          ARROW_PROJECTILE_SPEED,
+          ARROW_START_HEIGHT,
+          ARROW_WATER_DAMAGE,
+          MAX_WATER,
+          PLAYER_COLLISION_RADIUS,
+          SWORD_ATTACK_ARC_DOT_THRESHOLD,
+          SWORD_ATTACK_LINE_PADDING,
+          SWORD_ATTACK_RADIUS,
+          SWORD_ATTACK_VERTICAL_TOLERANCE,
+          SWORD_HIT_APPLE_DAMAGE,
+          SWORD_HIT_WATER_DAMAGE,
+          SWORD_KNOCKBACK_DISTANCE,
+          SWORD_KNOCKBACK_STEP_DISTANCE,
+        },
+        helpers: {
+          buildPlayerLogContext,
+          clamp,
+          clonePoint,
+          distanceBetween,
+          formatLogDetailValue,
+          getClosestPointOnSegment,
+          isRouteSegmentClear,
+          resolveWalkablePosition,
+          roundNumber,
+          sanitizeText,
+        },
+      }),
+      physics: createPhysicsSystem({
+        constants: {
+          ACTION_RADIUS,
+          APPLE_REGROW_INTERVAL_MS,
+          ARROW_PROJECTILE_RADIUS,
+          PLAYER_COLLISION_RADIUS,
+          SOCCER_BALL_ACTION_RADIUS,
+          SOCCER_BALL_DRAG_PER_SECOND,
+          SOCCER_BALL_MIN_SPEED,
+          SOCCER_FIELD,
+          SOCCER_GOAL_CELEBRATION_MS,
+        },
+        helpers: {
+          clamp,
+          clonePoint,
+          distanceBetween,
+          getClosestPointOnSegment,
+          getSoccerBallGroundPosition,
+          getSoccerFieldMetrics,
+          getSoccerGoalSideFromSegment,
+          isRouteSegmentClear,
+          roundNumber,
+          sanitizeText,
+        },
+      }),
+      leaderboard: createLeaderboardSystem({
+        getTopGameScores,
+        getTopSoccerScorers,
+        LEADERBOARD_LIMIT,
+        LEADERBOARD_REFRESH_MS,
+      }),
+    };
   }
 
   createInitialState() {
@@ -1415,9 +1520,6 @@ class AiGameEngine {
   }
 
   syncKnownPlayerIdentity(player, userId, userName) {
-    const previousNickname = player.name;
-    const previousOutfitColor = player.appearance?.outfitColor || null;
-
     player.realName = userName;
     player.appearance = buildPlayerAppearance(player.appearance);
 
@@ -2685,7 +2787,7 @@ class AiGameEngine {
     };
   }
 
-  advanceAgentMovement(agent, deltaSeconds, now) {
+  advanceAgentMovement(agent, deltaSeconds, _now) {
     if (agent.currentAction !== 'move_to' || !agent.movementTargetId) {
       return;
     }
@@ -2876,1119 +2978,168 @@ class AiGameEngine {
     }
   }
 
-  performDrink(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (!this.isNearLake(actor.position)) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    actor.inventory.water = clamp(actor.inventory.water + DRINK_AMOUNT, 0, MAX_WATER);
-    actor.status = 'acting';
-    actor.currentAction = 'drink_water';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.awardActorScore(actor, DRINK_SCORE_POINTS);
-    return true;
+  performDrink(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performDrink(this, actor, eventName, logContext, options);
   }
 
-  performTowerElevatorRide(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    const nearbyElevator = getNearbyTowerElevator(this.state.world, actor.position);
-    if (!nearbyElevator) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const e = this.state.world.elevators.find((e) => e.id === nearbyElevator.id);
-    if (e && e.state === 'idle_top') {
-      e.state = 'going_down';
-    }
-
-    actor.status = 'acting';
-    actor.currentAction = 'ride_elevator';
-    actor.actionCooldownUntil = Date.now() + TOWER_ELEVATOR_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `tower=${nearbyElevator.id}; triggered=true`,
-    }));
-    return true;
+  performTowerElevatorRide(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performTowerElevatorRide(this, actor, eventName, logContext, options);
   }
 
   getNearbyBowPickup(position, maxDistance = BOW_PICKUP_RADIUS) {
-    const bows = Array.isArray(this.state.world?.bows)
-      ? this.state.world.bows
-      : [];
-    let closestBow = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    bows.forEach((bow) => {
-      const distance = distanceBetween(position, bow.position);
-      if (distance < maxDistance && distance < closestDistance) {
-        closestBow = bow;
-        closestDistance = distance;
-      }
-    });
-
-    return closestBow;
+    return this.systems.inventory.getNearbyBowPickup(this, position, maxDistance);
   }
 
   getNearbySwordPickup(position, maxDistance = SWORD_PICKUP_RADIUS) {
-    const swords = Array.isArray(this.state.world?.swords)
-      ? this.state.world.swords
-      : [];
-    let closestSword = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    swords.forEach((sword) => {
-      const distance = distanceBetween(position, sword.position);
-      if (distance < maxDistance && distance < closestDistance) {
-        closestSword = sword;
-        closestDistance = distance;
-      }
-    });
-
-    return closestSword;
+    return this.systems.inventory.getNearbySwordPickup(this, position, maxDistance);
   }
 
   getNearbyDroppedApple(position, maxDistance = DROPPED_APPLE_PICKUP_RADIUS) {
-    const droppedApples = Array.isArray(this.state.world?.droppedApples)
-      ? this.state.world.droppedApples
-      : [];
-    let closestApple = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    droppedApples.forEach((apple) => {
-      const distance = distanceBetween(position, apple.position);
-      if (distance < maxDistance && distance < closestDistance) {
-        closestApple = apple;
-        closestDistance = distance;
-      }
-    });
-
-    return closestApple;
+    return this.systems.inventory.getNearbyDroppedApple(this, position, maxDistance);
   }
 
   getNearbyFruitPickupSource(position) {
-    const nearbyTree = this.getNearbyFruitTree(position);
-    const nearbyDroppedApple = this.getNearbyDroppedApple(position);
-
-    if (nearbyTree && nearbyDroppedApple) {
-      const treeDistance = distanceBetween(position, nearbyTree.position);
-      const droppedDistance = distanceBetween(position, nearbyDroppedApple.position);
-      return droppedDistance <= treeDistance
-        ? { type: 'ground', apple: nearbyDroppedApple }
-        : { type: 'tree', tree: nearbyTree };
-    }
-
-    if (nearbyDroppedApple) {
-      return { type: 'ground', apple: nearbyDroppedApple };
-    }
-
-    if (nearbyTree) {
-      return { type: 'tree', tree: nearbyTree };
-    }
-
-    return null;
+    return this.systems.inventory.getNearbyFruitPickupSource(this, position);
   }
 
   buildDroppedApplePosition(actor) {
-    const rotationY = Number(actor?.rotationY) || 0;
-    const desiredPosition = {
-      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * DROPPED_APPLE_DROP_DISTANCE),
-      y: DROPPED_APPLE_GROUND_Y,
-      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * DROPPED_APPLE_DROP_DISTANCE),
-    };
-    const resolvedPosition = resolveWalkablePosition(
-      this.state.world,
-      actor.position,
-      desiredPosition,
-      0.18
-    );
-
-    return {
-      x: resolvedPosition.x,
-      y: DROPPED_APPLE_GROUND_Y,
-      z: resolvedPosition.z,
-    };
+    return this.systems.inventory.buildDroppedApplePosition(this, actor);
   }
 
   buildDroppedBowPosition(actor) {
-    const rotationY = Number(actor?.rotationY) || 0;
-    const desiredPosition = {
-      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * BOW_DROP_DISTANCE),
-      y: Number(actor?.position?.y) || 0,
-      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * BOW_DROP_DISTANCE),
-    };
-    const resolvedPosition = resolveWalkablePosition(
-      this.state.world,
-      actor.position,
-      desiredPosition,
-      0.2
-    );
-
-    return {
-      x: resolvedPosition.x,
-      y: resolvedPosition.y + BOW_GROUND_OFFSET_Y,
-      z: resolvedPosition.z,
-    };
+    return this.systems.inventory.buildDroppedBowPosition(this, actor);
   }
 
   buildDroppedSwordPosition(actor) {
-    const rotationY = Number(actor?.rotationY) || 0;
-    const desiredPosition = {
-      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * SWORD_DROP_DISTANCE),
-      y: Number(actor?.position?.y) || 0,
-      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * SWORD_DROP_DISTANCE),
-    };
-    const resolvedPosition = resolveWalkablePosition(
-      this.state.world,
-      actor.position,
-      desiredPosition,
-      0.2
-    );
-
-    return {
-      x: resolvedPosition.x,
-      y: resolvedPosition.y + SWORD_GROUND_OFFSET_Y,
-      z: resolvedPosition.z,
-    };
+    return this.systems.inventory.buildDroppedSwordPosition(this, actor);
   }
 
   dropSwordInventory(actor) {
-    if (!actor?.inventory?.hasSword) {
-      return null;
-    }
-
-    const droppedSword = {
-      id: `dropped-sword-${this.state.nextDroppedSwordId}`,
-      position: this.buildDroppedSwordPosition(actor),
-    };
-
-    this.state.nextDroppedSwordId += 1;
-    this.state.world.swords.push(droppedSword);
-    actor.inventory.hasSword = false;
-    return droppedSword;
+    return this.systems.inventory.dropSwordInventory(this, actor);
   }
 
   dropBowInventory(actor) {
-    if (!actor?.inventory?.hasBow) {
-      return null;
-    }
-
-    const storedArrows = Math.max(0, Math.trunc(Number(actor.inventory.arrows) || 0));
-    const droppedBow = {
-      id: `dropped-bow-${this.state.nextDroppedBowId}`,
-      position: this.buildDroppedBowPosition(actor),
-      arrowsRemaining: storedArrows > 0 ? storedArrows : BOW_DEFAULT_ARROW_COUNT,
-    };
-
-    this.state.nextDroppedBowId += 1;
-    this.state.world.bows.push(droppedBow);
-    actor.inventory.hasBow = false;
-    actor.inventory.arrows = 0;
-    return droppedBow;
+    return this.systems.inventory.dropBowInventory(this, actor);
   }
 
-  performPickSword(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (actor.inventory?.hasSword || actor.inventory?.hasBow || (Number(actor.inventory?.apples) || 0) > 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const nearbySword = this.getNearbySwordPickup(actor.position);
-    if (!nearbySword) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    this.state.world.swords = (this.state.world.swords || [])
-      .filter((sword) => sword.id !== nearbySword.id);
-    actor.inventory.hasSword = true;
-    actor.status = 'acting';
-    actor.currentAction = 'pick_sword';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `sword=${nearbySword.id}`,
-    }));
-    return true;
+  performPickSword(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performPickSword(this, actor, eventName, logContext, options);
   }
 
-  performDropSword(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (!actor.inventory?.hasSword) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const droppedSword = this.dropSwordInventory(actor);
-    if (!droppedSword) {
-      return false;
-    }
-
-    actor.status = 'acting';
-    actor.currentAction = 'drop_sword';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `sword=${droppedSword.id}`,
-    }));
-    return true;
+  performDropSword(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performDropSword(this, actor, eventName, logContext, options);
   }
 
   getSwordAttackTarget(actor) {
-    if (!actor || actor.status === 'dead' || !actor.inventory?.hasSword) {
-      return null;
-    }
-
-    const forwardX = Math.sin(Number(actor.rotationY) || 0);
-    const forwardZ = Math.cos(Number(actor.rotationY) || 0);
-    const candidates = [];
-    const pushCandidate = (target) => {
-      if (!target || target.id === actor.id || target.status === 'dead') {
-        return;
-      }
-
-      const verticalDelta = Math.abs((Number(target.position?.y) || 0) - (Number(actor.position?.y) || 0));
-      if (verticalDelta > SWORD_ATTACK_VERTICAL_TOLERANCE) {
-        return;
-      }
-
-      const deltaX = (Number(target.position?.x) || 0) - (Number(actor.position?.x) || 0);
-      const deltaZ = (Number(target.position?.z) || 0) - (Number(actor.position?.z) || 0);
-      const distance = Math.sqrt((deltaX * deltaX) + (deltaZ * deltaZ));
-      if (distance <= 0.001 || distance > SWORD_ATTACK_RADIUS) {
-        return;
-      }
-
-      const directionX = deltaX / distance;
-      const directionZ = deltaZ / distance;
-      const facingDot = (forwardX * directionX) + (forwardZ * directionZ);
-      if (facingDot < SWORD_ATTACK_ARC_DOT_THRESHOLD) {
-        return;
-      }
-
-      if (!isRouteSegmentClear(this.state.world, actor.position, target.position, SWORD_ATTACK_LINE_PADDING)) {
-        return;
-      }
-
-      candidates.push({ target, distance, facingDot });
-    };
-
-    pushCandidate(this.state.ai);
-    this.state.players.forEach((player) => {
-      pushCandidate(player);
-    });
-
-    candidates.sort((left, right) => {
-      if (left.distance !== right.distance) {
-        return left.distance - right.distance;
-      }
-
-      return right.facingDot - left.facingDot;
-    });
-
-    return candidates[0]?.target || null;
+    return this.systems.combat.getSwordAttackTarget(this, actor);
   }
 
-  applyHitResourceLoss(target, {
-    hitType = 'impact',
-    appleDamage = 0,
-    waterDamage = 0,
-    now = Date.now(),
-  } = {}) {
-    if (!target || target.status === 'dead') {
-      return {
-        applesLost: 0,
-        waterLost: 0,
-      };
-    }
-
-    const previousApples = Math.max(0, Math.trunc(Number(target.inventory?.apples) || 0));
-    const previousWater = clamp(Number(target.inventory?.water) || 0, 0, MAX_WATER);
-    const applesLost = Math.min(previousApples, Math.max(0, Math.trunc(Number(appleDamage) || 0)));
-    const waterLost = Math.min(previousWater, Math.max(0, Number(waterDamage) || 0));
-
-    target.inventory.apples = previousApples - applesLost;
-    target.inventory.water = clamp(previousWater - waterLost, 0, MAX_WATER);
-    target.hitFlashUntil = now + ACTOR_HIT_FLASH_DURATION_MS;
-    target.lastHitAt = now;
-    target.lastHitType = hitType;
-
-    return {
-      applesLost,
-      waterLost,
-    };
+  applyHitResourceLoss(target, options = {}) {
+    return this.systems.combat.applyHitResourceLoss(this, target, options);
   }
 
   applyActorKnockback(target, sourceRotationY, distance = SWORD_KNOCKBACK_DISTANCE) {
-    if (!target || target.status === 'dead') {
-      return false;
-    }
-
-    const totalDistance = Math.max(0, Number(distance) || 0);
-    if (totalDistance <= 0.001) {
-      return false;
-    }
-
-    const directionX = Math.sin(Number(sourceRotationY) || 0);
-    const directionZ = Math.cos(Number(sourceRotationY) || 0);
-    const stepDistance = Math.max(0.12, Number(SWORD_KNOCKBACK_STEP_DISTANCE) || 0.45);
-    const steps = Math.max(1, Math.ceil(totalDistance / stepDistance));
-    let currentPosition = clonePoint(target.position);
-    let movedAny = false;
-
-    for (let index = 0; index < steps; index += 1) {
-      const remainingDistance = totalDistance - (index * stepDistance);
-      const currentStepDistance = Math.min(stepDistance, remainingDistance);
-      if (currentStepDistance <= 0.0001) {
-        break;
-      }
-
-      const resolvedPosition = resolveWalkablePosition(
-        this.state.world,
-        currentPosition,
-        {
-          x: currentPosition.x + (directionX * currentStepDistance),
-          y: currentPosition.y,
-          z: currentPosition.z + (directionZ * currentStepDistance),
-        },
-        PLAYER_COLLISION_RADIUS
-      );
-
-      if (distanceBetween(currentPosition, resolvedPosition) <= 0.01) {
-        break;
-      }
-
-      currentPosition = resolvedPosition;
-      movedAny = true;
-    }
-
-    target.position.x = currentPosition.x;
-    target.position.y = currentPosition.y;
-    target.position.z = currentPosition.z;
-    return movedAny;
+    return this.systems.combat.applyActorKnockback(this, target, sourceRotationY, distance);
   }
 
-  performSwordAttack(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (!actor.inventory?.hasSword) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const now = Date.now();
-    const target = this.getSwordAttackTarget(actor);
-    actor.status = 'acting';
-    actor.currentAction = 'attack_sword';
-    actor.actionCooldownUntil = now + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    if (!target) {
-      this.logEvent(eventName, buildPlayerLogContext(actor, {
-        userAgent: logContext?.userAgent || 'backend-game',
-        details: 'result="miss"; target_id="-"; target_name="-"',
-      }));
-      return true;
-    }
-
-    const { applesLost, waterLost } = this.applyHitResourceLoss(target, {
-      hitType: 'sword',
-      appleDamage: SWORD_HIT_APPLE_DAMAGE,
-      waterDamage: SWORD_HIT_WATER_DAMAGE,
-      now,
-    });
-    this.applyActorKnockback(target, actor.rotationY, SWORD_KNOCKBACK_DISTANCE);
-
-    if (target === this.state.ai) {
-      this.clearMovement();
-      this.state.ai.status = 'idle';
-      this.state.ai.currentAction = 'wait';
-      this.state.nextDecisionAt = Math.max(this.state.nextDecisionAt, now + 500);
-    }
-
-    if (target.actorType === 'ai') {
-      this.logEvent('ai_hit_by_sword', {
-        userId: target.id,
-        userName: target.name,
-        userAgent: 'backend-ai',
-        details: `attacker_id=${formatLogDetailValue(actor.id)}; attacker_name=${formatLogDetailValue(actor.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
-      });
-    } else {
-      this.logEvent('player_hit_by_sword', buildPlayerLogContext(target, {
-        details: `attacker_id=${formatLogDetailValue(actor.id)}; attacker_name=${formatLogDetailValue(actor.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
-      }));
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `target_id=${formatLogDetailValue(target.id)}; target_name=${formatLogDetailValue(target.name || 'Jogador')}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
-    }));
-    return true;
+  performSwordAttack(actor, eventName, logContext, options = {}) {
+    return this.systems.combat.performSwordAttack(this, actor, eventName, logContext, options);
   }
 
-  performPickBow(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (actor.inventory?.hasBow || actor.inventory?.hasSword || (Number(actor.inventory?.apples) || 0) > 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const nearbyBow = this.getNearbyBowPickup(actor.position);
-    if (!nearbyBow) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    this.state.world.bows = (this.state.world.bows || [])
-      .filter((bow) => bow.id !== nearbyBow.id);
-    actor.inventory.hasBow = true;
-    actor.inventory.arrows = Math.max(1, Math.trunc(Number(nearbyBow.arrowsRemaining) || BOW_DEFAULT_ARROW_COUNT));
-    actor.status = 'acting';
-    actor.currentAction = 'pick_bow';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `bow=${nearbyBow.id}; arrows=${actor.inventory.arrows}`,
-    }));
-    return true;
+  performPickBow(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performPickBow(this, actor, eventName, logContext, options);
   }
 
-  performDropBow(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (!actor.inventory?.hasBow) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const droppedBow = this.dropBowInventory(actor);
-    if (!droppedBow) {
-      return false;
-    }
-
-    actor.status = 'acting';
-    actor.currentAction = 'drop_bow';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `bow=${droppedBow.id}; arrows=${droppedBow.arrowsRemaining}`,
-    }));
-    return true;
+  performDropBow(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performDropBow(this, actor, eventName, logContext, options);
   }
 
-  performShootArrow(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (!actor.inventory?.hasBow || (Number(actor.inventory?.arrows) || 0) <= 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const rotationY = Number(actor.rotationY) || 0;
-    const directionX = Math.sin(rotationY);
-    const directionZ = Math.cos(rotationY);
-    const now = Date.now();
-
-    this.state.world.arrows.push({
-      id: `arrow-${this.state.nextArrowProjectileId}`,
-      ownerActorId: actor.id,
-      position: {
-        x: (Number(actor.position?.x) || 0) + (directionX * ARROW_FORWARD_OFFSET),
-        y: (Number(actor.position?.y) || 0) + ARROW_START_HEIGHT,
-        z: (Number(actor.position?.z) || 0) + (directionZ * ARROW_FORWARD_OFFSET),
-      },
-      velocity: {
-        x: directionX * ARROW_PROJECTILE_SPEED,
-        y: 0,
-        z: directionZ * ARROW_PROJECTILE_SPEED,
-      },
-      rotationY,
-      expiresAt: now + ARROW_PROJECTILE_LIFETIME_MS,
-    });
-    this.state.nextArrowProjectileId += 1;
-    actor.inventory.arrows = Math.max(0, Math.trunc(Number(actor.inventory.arrows) || 0) - 1);
-    actor.status = 'acting';
-    actor.currentAction = 'shoot_arrow';
-    actor.actionCooldownUntil = now + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, buildPlayerLogContext(actor, {
-      userAgent: logContext?.userAgent || 'backend-game',
-      details: `arrows_remaining=${actor.inventory.arrows}; rotation_y=${roundNumber(rotationY, 3)}`,
-    }));
-    return true;
+  performShootArrow(actor, eventName, logContext, options = {}) {
+    return this.systems.combat.performShootArrow(this, actor, eventName, logContext, options);
   }
 
   getArrowHitTarget(ownerActorId, startPosition, endPosition) {
-    const normalizedOwnerActorId = sanitizeText(ownerActorId, 128);
-    const hitRadiusSquared = ARROW_HIT_RADIUS * ARROW_HIT_RADIUS;
-    const startY = Number(startPosition?.y) || 0;
-    const endY = Number(endPosition?.y) || 0;
-    let bestCandidate = null;
-
-    const considerActor = (actor) => {
-      if (!actor || actor.status === 'dead' || actor.id === normalizedOwnerActorId) {
-        return;
-      }
-
-      const closestPoint = getClosestPointOnSegment(startPosition, endPosition, actor.position);
-      const actorPositionX = Number(actor.position?.x) || 0;
-      const actorPositionZ = Number(actor.position?.z) || 0;
-      const deltaX = actorPositionX - closestPoint.x;
-      const deltaZ = actorPositionZ - closestPoint.z;
-      const planarDistanceSquared = (deltaX * deltaX) + (deltaZ * deltaZ);
-      if (planarDistanceSquared > hitRadiusSquared) {
-        return;
-      }
-
-      const arrowY = startY + ((endY - startY) * closestPoint.progress);
-      const actorBaseY = Number(actor.position?.y) || 0;
-      if (
-        arrowY < (actorBaseY + ARROW_HIT_MIN_Y_OFFSET)
-        || arrowY > (actorBaseY + ARROW_HIT_MAX_Y_OFFSET)
-      ) {
-        return;
-      }
-
-      if (
-        bestCandidate
-        && closestPoint.progress > bestCandidate.progress + 0.0001
-      ) {
-        return;
-      }
-
-      if (
-        bestCandidate
-        && Math.abs(closestPoint.progress - bestCandidate.progress) <= 0.0001
-        && planarDistanceSquared >= bestCandidate.planarDistanceSquared
-      ) {
-        return;
-      }
-
-      bestCandidate = {
-        actor,
-        progress: closestPoint.progress,
-        planarDistanceSquared,
-      };
-    };
-
-    considerActor(this.state.ai);
-    this.state.players.forEach((player) => {
-      considerActor(player);
-    });
-
-    return bestCandidate?.actor || null;
+    return this.systems.combat.getArrowHitTarget(this, ownerActorId, startPosition, endPosition);
   }
 
   applyArrowHit(target, arrow, now) {
-    if (!target || target.status === 'dead') {
-      return false;
-    }
-
-    const { applesLost, waterLost } = this.applyHitResourceLoss(target, {
-      hitType: 'arrow',
-      appleDamage: ARROW_APPLE_DAMAGE,
-      waterDamage: ARROW_WATER_DAMAGE,
-      now,
-    });
-
-    const shooter = this.getActorById(arrow?.ownerActorId);
-    const shooterName = shooter?.name || 'Alguem';
-    const shooterId = shooter?.id || sanitizeText(arrow?.ownerActorId, 128) || 'unknown';
-
-    if (target.actorType === 'ai') {
-      this.logEvent('ai_hit_by_arrow', {
-        userId: target.id,
-        userName: target.name,
-        userAgent: 'backend-ai',
-        details: `shooter_id=${formatLogDetailValue(shooterId)}; shooter_name=${formatLogDetailValue(shooterName)}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
-      });
-    } else {
-      this.logEvent('player_hit_by_arrow', buildPlayerLogContext(target, {
-        details: `shooter_id=${formatLogDetailValue(shooterId)}; shooter_name=${formatLogDetailValue(shooterName)}; apples_lost=${applesLost}; water_lost=${roundNumber(waterLost, 1)}`,
-      }));
-    }
-
-    return true;
+    return this.systems.combat.applyArrowHit(this, target, arrow, now);
   }
 
-  performPickFruit(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if ((Number(actor.inventory?.apples) || 0) > 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const pickupSource = this.getNearbyFruitPickupSource(actor.position);
-
-    if (!pickupSource) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    if (pickupSource.type === 'tree') {
-      const nearbyTree = pickupSource.tree;
-      nearbyTree.applesRemaining = Math.max(0, nearbyTree.applesRemaining - 1);
-      if (!Number.isFinite(nearbyTree.nextAppleRegrowAt) || nearbyTree.nextAppleRegrowAt <= 0) {
-        nearbyTree.nextAppleRegrowAt = Date.now() + APPLE_REGROW_INTERVAL_MS;
-      }
-    } else {
-      this.state.world.droppedApples = (this.state.world.droppedApples || [])
-        .filter((apple) => apple.id !== pickupSource.apple.id);
-    }
-
-    actor.inventory.apples += 1;
-    actor.status = 'acting';
-    actor.currentAction = 'pick_fruit';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    if (actor === this.state.ai) {
-      this.rememberAiAction('pick_fruit');
-    }
-
-    return true;
+  performPickFruit(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performPickFruit(this, actor, eventName, logContext, options);
   }
 
-  performDropFruit(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if ((Number(actor.inventory?.apples) || 0) <= 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    const droppedApple = {
-      id: `dropped-apple-${this.state.nextDroppedAppleId}`,
-      position: this.buildDroppedApplePosition(actor),
-    };
-    this.state.nextDroppedAppleId += 1;
-    this.state.world.droppedApples.push(droppedApple);
-    actor.inventory.apples -= 1;
-    actor.status = 'acting';
-    actor.currentAction = 'drop_fruit';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    this.logEvent(eventName, logContext);
-    return true;
+  performDropFruit(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performDropFruit(this, actor, eventName, logContext, options);
   }
 
-  performEatFruit(actor, eventName, logContext, { clearMovement = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return false;
-    }
-
-    if (actor.inventory.apples <= 0) {
-      if (actor === this.state.ai) {
-        this.state.nextDecisionAt = Date.now() + 500;
-      }
-      return false;
-    }
-
-    actor.inventory.apples -= 1;
-    actor.inventory.food = clamp(actor.inventory.food + FOOD_FROM_APPLE, 0, MAX_FOOD);
-    actor.status = 'acting';
-    actor.currentAction = 'eat_fruit';
-    actor.actionCooldownUntil = Date.now() + ACTION_COOLDOWN_MS;
-
-    if (clearMovement) {
-      this.clearMovement();
-    }
-
-    if (actor === this.state.ai) {
-      this.rememberAiAction('eat_fruit');
-    }
-
-    this.awardActorScore(actor, EAT_FRUIT_SCORE_POINTS);
-    return true;
+  performEatFruit(actor, eventName, logContext, options = {}) {
+    return this.systems.inventory.performEatFruit(this, actor, eventName, logContext, options);
   }
 
-  getAvailableActions(actor, now, { includeDrop = false } = {}) {
-    if (!actor || actor.status === 'dead') {
-      return {
-        elevator_up: false,
-        elevator_down: false,
-        attack_sword: false,
-        shoot_arrow: false,
-        kick_ball: false,
-        drink_water: false,
-        pick_sword: false,
-        pick_bow: false,
-        pick_fruit: false,
-        eat_fruit: false,
-        ...(includeDrop ? { drop_sword: false, drop_bow: false, drop_fruit: false } : {}),
-      };
-    }
-
-    const hasHeldFruit = (Number(actor.inventory?.apples) || 0) > 0;
-    const hasHeldSword = Boolean(actor.inventory?.hasSword);
-    const hasHeldBow = Boolean(actor.inventory?.hasBow);
-    const heldArrows = Math.max(0, Math.trunc(Number(actor.inventory?.arrows) || 0));
-    const canActNow = now >= actor.actionCooldownUntil;
-    const weaponInteractionsEnabled = actor.actorType !== 'ai';
-    const canPickSword = weaponInteractionsEnabled
-      && !hasHeldSword
-      && !hasHeldBow
-      && !hasHeldFruit
-      && Boolean(this.getNearbySwordPickup(actor.position));
-    const canPickBow = weaponInteractionsEnabled
-      && !hasHeldSword
-      && !hasHeldBow
-      && !hasHeldFruit
-      && Boolean(this.getNearbyBowPickup(actor.position));
-    const canPickFruit = !hasHeldFruit
-      && !hasHeldSword
-      && !hasHeldBow
-      && Boolean(this.getNearbyFruitPickupSource(actor.position));
-    const nearbyElevator = getNearbyTowerElevator(this.state.world, actor.position);
-    return {
-      elevator_up: nearbyElevator?.direction === 'up' && canActNow,
-      elevator_down: nearbyElevator?.direction === 'down' && canActNow,
-      attack_sword: weaponInteractionsEnabled && hasHeldSword && canActNow,
-      shoot_arrow: weaponInteractionsEnabled && hasHeldBow && heldArrows > 0 && canActNow,
-      kick_ball: !hasHeldSword
-        && !hasHeldBow
-        && !this.isSoccerRestartPaused(now)
-        && this.isNearSoccerBall(actor.position)
-        && canActNow,
-      drink_water: !hasHeldSword && !hasHeldBow && this.isNearLake(actor.position) && canActNow,
-      pick_sword: canPickSword && canActNow,
-      pick_bow: canPickBow && canActNow,
-      pick_fruit: canPickFruit && canActNow,
-      eat_fruit: !hasHeldSword && !hasHeldBow && hasHeldFruit && canActNow,
-      ...(includeDrop ? {
-        drop_sword: weaponInteractionsEnabled && hasHeldSword && canActNow,
-        drop_bow: weaponInteractionsEnabled && hasHeldBow && canActNow,
-        drop_fruit: hasHeldFruit && canActNow,
-      } : {}),
-    };
+  getAvailableActions(actor, now, options = {}) {
+    return this.systems.inventory.getAvailableActions(this, actor, now, options);
   }
 
   isNearSoccerBall(position) {
-    const ballPosition = getSoccerBallGroundPosition(this.state.world);
-    return distanceBetween(position, ballPosition) <= SOCCER_BALL_ACTION_RADIUS;
+    return this.systems.physics.isNearSoccerBall(this, position);
   }
 
   isSoccerRestartPaused(now = Date.now()) {
-    const restartAt = Number(this.state.world?.soccer?.restartAt) || 0;
-    return restartAt > now;
+    return this.systems.physics.isSoccerRestartPaused(this, now);
   }
 
   clearSoccerBallPossession() {
-    const ball = this.state.world?.soccer?.ball;
-    if (!ball) {
-      return;
-    }
-
-    ball.possessedByActorId = '';
-    ball.possessedByActorName = '';
+    return this.systems.physics.clearSoccerBallPossession(this);
   }
 
   clearSoccerBallPossessionIfHeldByActor(actorId) {
-    const normalizedActorId = sanitizeText(actorId, 128);
-    const ball = this.state.world?.soccer?.ball;
-    if (!normalizedActorId || !ball) {
-      return;
-    }
-
-    if (ball.possessedByActorId === normalizedActorId) {
-      this.clearSoccerBallPossession();
-    }
+    return this.systems.physics.clearSoccerBallPossessionIfHeldByActor(this, actorId);
   }
 
   getActorById(actorId) {
-    const normalizedActorId = sanitizeText(actorId, 128);
-    if (!normalizedActorId) {
-      return null;
-    }
-
-    if (this.state.ai?.id === normalizedActorId) {
-      return this.state.ai;
-    }
-
-    return this.state.players.get(normalizedActorId) || null;
+    return this.systems.physics.getActorById(this, actorId);
   }
 
   getSoccerBallMagnetDistance() {
-    const radius = Number(this.state.world?.soccer?.ball?.radius) || SOCCER_FIELD.ballRadius;
-    return PLAYER_COLLISION_RADIUS + radius + 0.14;
+    return this.systems.physics.getSoccerBallMagnetDistance(this);
   }
 
   getSoccerBallAnchorPosition(actor) {
-    const radius = Number(this.state.world?.soccer?.ball?.radius) || SOCCER_FIELD.ballRadius;
-    const forwardOffset = PLAYER_COLLISION_RADIUS + radius + 0.12;
-    const rotationY = Number(actor?.rotationY) || 0;
-
-    return {
-      x: (Number(actor?.position?.x) || 0) + (Math.sin(rotationY) * forwardOffset),
-      y: radius,
-      z: (Number(actor?.position?.z) || 0) + (Math.cos(rotationY) * forwardOffset),
-    };
+    return this.systems.physics.getSoccerBallAnchorPosition(this, actor);
   }
 
   setSoccerBallPossession(actor) {
-    if (!actor || actor.status === 'dead' || this.isSoccerRestartPaused()) {
-      return false;
-    }
-
-    const ball = this.state.world?.soccer?.ball;
-    if (!ball || ball.inGoal) {
-      return false;
-    }
-
-    const anchorPosition = this.getSoccerBallAnchorPosition(actor);
-    ball.possessedByActorId = actor.id;
-    ball.possessedByActorName = actor.name;
-    ball.lastTouchedByActorId = actor.id;
-    ball.lastTouchedByActorName = actor.name;
-    ball.velocity.x = 0;
-    ball.velocity.z = 0;
-    ball.position.x = anchorPosition.x;
-    ball.position.y = anchorPosition.y;
-    ball.position.z = anchorPosition.z;
-    return true;
+    return this.systems.physics.setSoccerBallPossession(this, actor);
   }
 
   syncSoccerBallPossession() {
-    const ball = this.state.world?.soccer?.ball;
-    if (!ball?.possessedByActorId) {
-      return false;
-    }
-
-    const holder = this.getActorById(ball.possessedByActorId);
-    if (!holder || holder.status === 'dead') {
-      this.clearSoccerBallPossession();
-      return false;
-    }
-
-    const anchorPosition = this.getSoccerBallAnchorPosition(holder);
-    ball.velocity.x = 0;
-    ball.velocity.z = 0;
-    ball.position.x = anchorPosition.x;
-    ball.position.y = anchorPosition.y;
-    ball.position.z = anchorPosition.z;
-    ball.lastTouchedByActorId = holder.id;
-    ball.lastTouchedByActorName = holder.name;
-    this.clampPossessedSoccerBallInsideField();
-    return true;
+    return this.systems.physics.syncSoccerBallPossession(this);
   }
 
   clampPossessedSoccerBallInsideField() {
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-    if (!soccer?.field || !ball?.possessedByActorId) {
-      return false;
-    }
-
-    const metrics = getSoccerFieldMetrics(this.state.world);
-    ball.position.x = clamp(Number(ball.position.x) || 0, metrics.xMin, metrics.xMax);
-    ball.position.y = ball.radius || metrics.radius;
-    ball.position.z = clamp(Number(ball.position.z) || 0, metrics.zMin, metrics.zMax);
-    ball.velocity.x = 0;
-    ball.velocity.z = 0;
-    return true;
+    return this.systems.physics.clampPossessedSoccerBallInsideField(this);
   }
 
   maybeRegisterSoccerGoalFromCarrierMovement(actor, previousPosition, now) {
-    if (!actor || actor.status === 'dead' || this.isSoccerRestartPaused(now)) {
-      return false;
-    }
-
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-    if (!soccer?.field || !ball || ball.possessedByActorId !== actor.id) {
-      return false;
-    }
-
-    const metrics = getSoccerFieldMetrics(this.state.world);
-    const goalSide = getSoccerGoalSideFromSegment(previousPosition, actor.position, metrics);
-    if (!goalSide) {
-      return false;
-    }
-
-    const anchorPosition = this.getSoccerBallAnchorPosition(actor);
-    ball.position.x = anchorPosition.x;
-    ball.position.y = anchorPosition.y;
-    ball.position.z = anchorPosition.z;
-    ball.lastTouchedByActorId = actor.id;
-    ball.lastTouchedByActorName = actor.name;
-    return this.registerSoccerGoal(goalSide, now);
+    return this.systems.physics.maybeRegisterSoccerGoalFromCarrierMovement(this, actor, previousPosition, now);
   }
 
   tryMagnetizeSoccerBallToNearbyPlayer() {
-    const ball = this.state.world?.soccer?.ball;
-    if (!ball || ball.possessedByActorId) {
-      return false;
-    }
-
-    const magnetDistance = this.getSoccerBallMagnetDistance();
-    let candidate = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    for (const player of this.state.players.values()) {
-      if (!player || player.status === 'dead') {
-        continue;
-      }
-
-      const distance = distanceBetween(player.position, ball.position);
-      if (distance <= magnetDistance && distance < closestDistance) {
-        candidate = player;
-        closestDistance = distance;
-      }
-    }
-
-    return candidate ? this.setSoccerBallPossession(candidate) : false;
+    return this.systems.physics.tryMagnetizeSoccerBallToNearbyPlayer(this);
   }
 
   bumpSoccerBallFromPlayer(player, previousPosition) {
-    if (!player || player.status === 'dead') {
-      return;
-    }
-
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-
-    if (!soccer?.field || !ball || ball.inGoal || this.isSoccerRestartPaused()) {
-      return;
-    }
-
-    const moveDeltaX = player.position.x - (Number(previousPosition?.x) || 0);
-    const moveDeltaZ = player.position.z - (Number(previousPosition?.z) || 0);
-    const moveDistance = Math.sqrt((moveDeltaX * moveDeltaX) + (moveDeltaZ * moveDeltaZ));
-    if (moveDistance <= 0.001) {
-      return;
-    }
-
-    const touchDistance = this.getSoccerBallMagnetDistance();
-    const closestPoint = getClosestPointOnSegment(previousPosition, player.position, ball.position);
-    const ballDeltaX = (Number(ball.position?.x) || 0) - closestPoint.x;
-    const ballDeltaZ = (Number(ball.position?.z) || 0) - closestPoint.z;
-    const distanceToBall = Math.sqrt((ballDeltaX * ballDeltaX) + (ballDeltaZ * ballDeltaZ));
-    if (distanceToBall > touchDistance) {
-      return;
-    }
-
-    this.setSoccerBallPossession(player);
+    return this.systems.physics.bumpSoccerBallFromPlayer(this, player, previousPosition);
   }
 
   isNearLake(position) {
-    const lakeEdgeDistance = distanceBetween(position, this.state.world.lake.position);
-    return lakeEdgeDistance < this.state.world.lake.radius + ACTION_RADIUS;
+    return this.systems.physics.isNearLake(this, position);
   }
 
   resetSoccerBall() {
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-
-    if (!soccer?.field || !ball) {
-      return;
-    }
-
-    ball.position.x = Number(soccer.field.position?.x) || 0;
-    ball.position.y = ball.radius || SOCCER_FIELD.ballRadius;
-    ball.position.z = Number(soccer.field.position?.z) || 0;
-    ball.velocity.x = 0;
-    ball.velocity.z = 0;
-    ball.inGoal = null;
-    this.clearSoccerBallPossession();
+    return this.systems.physics.resetSoccerBall(this);
   }
 
   persistSoccerGoalRecord(actorId, fallbackActorName = '') {
@@ -4015,233 +3166,23 @@ class AiGameEngine {
   }
 
   registerSoccerGoal(side, now) {
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-    if (!soccer || !ball) {
-      return false;
-    }
-
-    soccer.lastGoalSequence = Math.max(0, Math.trunc(soccer.lastGoalSequence || 0)) + 1;
-    soccer.lastGoalEvent = {
-      sequence: soccer.lastGoalSequence,
-      side,
-      playerId: ball.lastTouchedByActorId || '',
-      playerName: ball.lastTouchedByActorName || 'Alguem',
-      createdAt: now,
-    };
-
-    this.logEvent('soccer_goal_scored', {
-      userId: ball.lastTouchedByActorId || null,
-      userName: ball.lastTouchedByActorName || 'Jogador',
-      userAgent: 'backend-game',
-      details: `side=${side}; x=${roundNumber(ball.position.x, 2)}; z=${roundNumber(ball.position.z, 2)}`,
-    });
-
-    soccer.restartAt = now + SOCCER_GOAL_CELEBRATION_MS;
-    this.persistSoccerGoalRecord(ball.lastTouchedByActorId, ball.lastTouchedByActorName);
-    this.resetSoccerBall();
-    return true;
+    return this.systems.physics.registerSoccerGoal(this, side, now);
   }
 
   advanceSoccerBall(deltaSeconds, now) {
-    const soccer = this.state.world?.soccer;
-    const ball = soccer?.ball;
-
-    if (!soccer?.field || !ball) {
-      return;
-    }
-
-    if (this.isSoccerRestartPaused(now)) {
-      this.resetSoccerBall();
-      return;
-    }
-
-    if ((Number(soccer.restartAt) || 0) > 0) {
-      soccer.restartAt = 0;
-    }
-
-    if (this.syncSoccerBallPossession()) {
-      return;
-    }
-
-    const metrics = getSoccerFieldMetrics(this.state.world);
-    const velocityX = Number(ball.velocity?.x) || 0;
-    const velocityZ = Number(ball.velocity?.z) || 0;
-    const speed = Math.sqrt((velocityX * velocityX) + (velocityZ * velocityZ));
-
-    if (speed < SOCCER_BALL_MIN_SPEED) {
-      ball.velocity.x = 0;
-      ball.velocity.z = 0;
-    } else {
-      const nextSpeed = Math.max(0, speed - (SOCCER_BALL_DRAG_PER_SECOND * deltaSeconds));
-      const speedScale = nextSpeed > 0 ? nextSpeed / speed : 0;
-      ball.velocity.x = velocityX * speedScale;
-      ball.velocity.z = velocityZ * speedScale;
-    }
-
-    ball.position.x += (Number(ball.velocity.x) || 0) * deltaSeconds;
-    ball.position.z += (Number(ball.velocity.z) || 0) * deltaSeconds;
-    ball.position.y = ball.radius || metrics.radius;
-
-    const isInsideGoalMouth = ball.position.x >= metrics.goalXMin && ball.position.x <= metrics.goalXMax;
-
-    if (ball.inGoal === 'north') {
-      if (ball.position.x < metrics.goalXMin) {
-        ball.position.x = metrics.goalXMin;
-        ball.velocity.x = Math.abs(ball.velocity.x || 0);
-      } else if (ball.position.x > metrics.goalXMax) {
-        ball.position.x = metrics.goalXMax;
-        ball.velocity.x = -Math.abs(ball.velocity.x || 0);
-      }
-
-      if (ball.position.z < metrics.northGoalMinZ) {
-        ball.position.z = metrics.northGoalMinZ;
-        ball.velocity.z = Math.abs(ball.velocity.z || 0);
-      } else if (ball.position.z > metrics.northGoalMaxZ) {
-        ball.position.z = metrics.northGoalMaxZ;
-        ball.velocity.z = -Math.abs(ball.velocity.z || 0);
-      }
-      return;
-    }
-
-    if (ball.inGoal === 'south') {
-      if (ball.position.x < metrics.goalXMin) {
-        ball.position.x = metrics.goalXMin;
-        ball.velocity.x = Math.abs(ball.velocity.x || 0);
-      } else if (ball.position.x > metrics.goalXMax) {
-        ball.position.x = metrics.goalXMax;
-        ball.velocity.x = -Math.abs(ball.velocity.x || 0);
-      }
-
-      if (ball.position.z < metrics.southGoalMinZ) {
-        ball.position.z = metrics.southGoalMinZ;
-        ball.velocity.z = Math.abs(ball.velocity.z || 0);
-      } else if (ball.position.z > metrics.southGoalMaxZ) {
-        ball.position.z = metrics.southGoalMaxZ;
-        ball.velocity.z = -Math.abs(ball.velocity.z || 0);
-      }
-      return;
-    }
-
-    if (ball.position.x < metrics.xMin) {
-      ball.position.x = metrics.xMin;
-      ball.velocity.x = Math.abs(ball.velocity.x || 0);
-    } else if (ball.position.x > metrics.xMax) {
-      ball.position.x = metrics.xMax;
-      ball.velocity.x = -Math.abs(ball.velocity.x || 0);
-    }
-
-    if (ball.position.z < metrics.zMin) {
-      if (isInsideGoalMouth) {
-        if (this.registerSoccerGoal('north', now)) {
-          return;
-        }
-      } else {
-        ball.position.z = metrics.zMin;
-        ball.velocity.z = Math.abs(ball.velocity.z || 0);
-      }
-    } else if (ball.position.z > metrics.zMax) {
-      if (isInsideGoalMouth) {
-        if (this.registerSoccerGoal('south', now)) {
-          return;
-        }
-      } else {
-        ball.position.z = metrics.zMax;
-        ball.velocity.z = -Math.abs(ball.velocity.z || 0);
-      }
-    }
-
-    this.tryMagnetizeSoccerBallToNearbyPlayer();
+    return this.systems.physics.advanceSoccerBall(this, deltaSeconds, now);
   }
 
   advanceArrowProjectiles(deltaSeconds, now) {
-    if (!Array.isArray(this.state.world?.arrows) || this.state.world.arrows.length === 0) {
-      return;
-    }
-
-    const nextArrows = [];
-
-    this.state.world.arrows.forEach((arrow) => {
-      if (!arrow || now >= (Number(arrow.expiresAt) || 0)) {
-        return;
-      }
-
-      const previousPosition = clonePoint(arrow.position);
-      const velocityX = Number(arrow.velocity?.x) || 0;
-      const velocityY = Number(arrow.velocity?.y) || 0;
-      const velocityZ = Number(arrow.velocity?.z) || 0;
-      const nextPosition = {
-        x: (Number(arrow.position?.x) || 0) + (velocityX * deltaSeconds),
-        y: (Number(arrow.position?.y) || 0) + (velocityY * deltaSeconds),
-        z: (Number(arrow.position?.z) || 0) + (velocityZ * deltaSeconds),
-      };
-
-      if (!isRouteSegmentClear(this.state.world, arrow.position, nextPosition, ARROW_PROJECTILE_RADIUS)) {
-        return;
-      }
-
-      const hitTarget = this.getArrowHitTarget(arrow.ownerActorId, previousPosition, nextPosition);
-      if (hitTarget) {
-        this.applyArrowHit(hitTarget, arrow, now);
-        return;
-      }
-
-      arrow.position.x = nextPosition.x;
-      arrow.position.y = nextPosition.y;
-      arrow.position.z = nextPosition.z;
-      arrow.rotationY = Math.atan2(velocityX, velocityZ);
-      nextArrows.push(arrow);
-    });
-
-    this.state.world.arrows = nextArrows;
+    return this.systems.physics.advanceArrowProjectiles(this, deltaSeconds, now);
   }
 
   advanceTreeRegrowth(now) {
-    this.state.world.trees.forEach((tree) => {
-      const maxApples = Number.isFinite(tree.maxApples) ? tree.maxApples : 0;
-      if (maxApples <= 0) {
-        return;
-      }
-
-      if (tree.applesRemaining >= maxApples) {
-        tree.applesRemaining = maxApples;
-        tree.nextAppleRegrowAt = null;
-        return;
-      }
-
-      if (!Number.isFinite(tree.nextAppleRegrowAt) || tree.nextAppleRegrowAt <= 0) {
-        tree.nextAppleRegrowAt = now + APPLE_REGROW_INTERVAL_MS;
-        return;
-      }
-
-      if (now < tree.nextAppleRegrowAt) {
-        return;
-      }
-
-      tree.applesRemaining = Math.min(maxApples, tree.applesRemaining + 1);
-      tree.nextAppleRegrowAt = tree.applesRemaining < maxApples
-        ? now + APPLE_REGROW_INTERVAL_MS
-        : null;
-    });
+    return this.systems.physics.advanceTreeRegrowth(this, now);
   }
 
   getNearbyFruitTree(position) {
-    let closestTree = null;
-    let closestDistance = Number.POSITIVE_INFINITY;
-
-    this.state.world.trees.forEach((tree) => {
-      if (tree.applesRemaining <= 0) {
-        return;
-      }
-
-      const distance = distanceBetween(position, tree.position);
-      if (distance < ACTION_RADIUS && distance < closestDistance) {
-        closestTree = tree;
-        closestDistance = distance;
-      }
-    });
-
-    return closestTree;
+    return this.systems.inventory.getNearbyFruitTree(this, position);
   }
 
   clearMovement() {
@@ -4253,47 +3194,15 @@ class AiGameEngine {
   }
 
   maybeRefreshLeaderboards(now = Date.now()) {
-    if ((now - this.state.leaderboardLastUpdatedAt) >= LEADERBOARD_REFRESH_MS) {
-      this.refreshLeaderboard().catch((error) => {
-        this.logger.error('Leaderboard refresh failed:', error.message);
-      });
-    }
-
-    if ((now - this.state.soccerLeaderboardLastUpdatedAt) >= LEADERBOARD_REFRESH_MS) {
-      this.refreshSoccerLeaderboard().catch((error) => {
-        this.logger.error('Soccer leaderboard refresh failed:', error.message);
-      });
-    }
+    return this.systems.leaderboard.maybeRefreshLeaderboards(this, now);
   }
 
   async refreshLeaderboard() {
-    if (this.state.leaderboardRefreshInFlight) {
-      return;
-    }
-
-    this.state.leaderboardRefreshInFlight = true;
-
-    try {
-      this.state.leaderboard = await getTopGameScores(LEADERBOARD_LIMIT);
-      this.state.leaderboardLastUpdatedAt = Date.now();
-    } finally {
-      this.state.leaderboardRefreshInFlight = false;
-    }
+    return this.systems.leaderboard.refreshLeaderboard(this);
   }
 
   async refreshSoccerLeaderboard() {
-    if (this.state.soccerLeaderboardRefreshInFlight) {
-      return;
-    }
-
-    this.state.soccerLeaderboardRefreshInFlight = true;
-
-    try {
-      this.state.soccerLeaderboard = await getTopSoccerScorers(LEADERBOARD_LIMIT);
-      this.state.soccerLeaderboardLastUpdatedAt = Date.now();
-    } finally {
-      this.state.soccerLeaderboardRefreshInFlight = false;
-    }
+    return this.systems.leaderboard.refreshSoccerLeaderboard(this);
   }
 
   async loadRecentChatMessages() {

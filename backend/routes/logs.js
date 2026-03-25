@@ -3,57 +3,83 @@ const router = express.Router();
 const config = require('../config');
 const { getDashboardData, insertLog } = require('../database/postgres');
 const { getAuthenticatedUser } = require('../middleware/authenticate');
+const { buildErrorResponse } = require('../shared/errors');
+const { normalizeEmail, normalizeInteger, normalizeText } = require('../shared/normalize');
+const { getRequestIp, getRequestUserAgent } = require('../shared/request');
 const authSessionRepository = require('../database/auth-sessions');
 const agentRepository = require('../database/agents');
 const worldRuntimeRepository = require('../database/world-runtime');
-
-function getRequestIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const rawIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || req.socket.remoteAddress || '';
-  return rawIp.split(',')[0].trim();
-}
-
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
-}
-
-function normalizeInteger(value, fallback, min = 1, max = 200) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.max(min, Math.min(max, parsed));
-}
 
 function normalizeLogCategory(value) {
   return value === 'game' ? 'game' : 'site';
 }
 
 function isAuthorizedDashboardUser(user) {
-  return Boolean(user?.email) && config.ADMIN_GOOGLE_EMAILS.includes(String(user.email).trim().toLowerCase());
+  const email = normalizeEmail(user?.email);
+  return Boolean(email) && config.ADMIN_GOOGLE_EMAILS.includes(email);
+}
+
+function respondInternalError(req, res, logLabel, publicMessage, error) {
+  const { statusCode, payload } = buildErrorResponse(
+    {
+      statusCode: 500,
+      publicMessage,
+    },
+    {
+      fallbackCode: 'internal_error',
+      correlationId: req.correlationId,
+    }
+  );
+
+  console.error(logLabel, {
+    correlationId: req.correlationId,
+    method: req.method,
+    path: req.originalUrl,
+    message: error?.message || 'Unknown error',
+  });
+  res.status(statusCode).json(payload);
+}
+
+function respondKnownError(req, res, {
+  statusCode,
+  publicMessage,
+  fallbackCode,
+  extraPayload = null,
+}) {
+  const { statusCode: resolvedStatusCode, payload } = buildErrorResponse(
+    {
+      statusCode,
+      publicMessage,
+    },
+    {
+      fallbackCode,
+      correlationId: req.correlationId,
+    }
+  );
+
+  res.status(resolvedStatusCode).json(extraPayload ? { ...payload, ...extraPayload } : payload);
 }
 
 async function requireAdminUser(req, res) {
   const authenticatedUser = await getAuthenticatedUser(req, { requireActiveSession: true, touchSession: true });
 
   if (!authenticatedUser) {
-    res.status(401).json({ error: 'Not authenticated' });
+    respondKnownError(req, res, {
+      statusCode: 401,
+      publicMessage: 'Invalid, expired, or revoked session',
+      fallbackCode: 'invalid_session',
+    });
     return null;
   }
 
   if (!isAuthorizedDashboardUser(authenticatedUser)) {
-    res.status(403).json({
-      error: 'Acesso negado para este email.',
-      email: authenticatedUser.email || null,
+    respondKnownError(req, res, {
+      statusCode: 403,
+      publicMessage: 'Acesso negado para este email.',
+      fallbackCode: 'forbidden',
+      extraPayload: {
+        email: authenticatedUser.email || null,
+      },
     });
     return null;
   }
@@ -66,7 +92,7 @@ async function appendAdminAuditLog(req, adminUser, event, details = {}) {
     await insertLog({
       event,
       ip: getRequestIp(req),
-      userAgent: normalizeText(req.headers['user-agent'], 512) || '',
+      userAgent: getRequestUserAgent(req),
       userId: adminUser?.id || null,
       userName: adminUser?.name || null,
       category: 'site',
@@ -83,15 +109,23 @@ router.post('/sync', async (req, res) => {
   const authenticatedUser = await getAuthenticatedUser(req, { requireActiveSession: true, touchSession: true });
 
   if (!type) {
-    return res.status(400).json({ error: 'Config type is required' });
+    return respondKnownError(req, res, {
+      statusCode: 400,
+      publicMessage: 'Config type is required',
+      fallbackCode: 'validation_failed',
+    });
   }
 
   if (!authenticatedUser) {
-    return res.status(401).json({ error: 'Not authenticated' });
+    return respondKnownError(req, res, {
+      statusCode: 401,
+      publicMessage: 'Invalid, expired, or revoked session',
+      fallbackCode: 'invalid_session',
+    });
   }
 
   const ip = getRequestIp(req);
-  const userAgent = normalizeText(req.headers['user-agent'], 512) || '';
+  const userAgent = getRequestUserAgent(req);
 
   try {
     await insertLog({
@@ -105,8 +139,7 @@ router.post('/sync', async (req, res) => {
 
     res.status(201).json({ synced: true });
   } catch (error) {
-    console.error('Sync error:', error.message);
-    res.status(500).json({ error: 'System error' });
+    respondInternalError(req, res, 'Sync error', 'System error', error);
   }
 });
 
@@ -118,8 +151,7 @@ router.get('/dashboard', async (req, res) => {
     const finalData = await getDashboardData();
     res.json(finalData);
   } catch (error) {
-    console.error('Dashboard error:', error.message);
-    res.status(500).json({ error: 'Internal dashboard error' });
+    respondInternalError(req, res, 'Dashboard error', 'Internal dashboard error', error);
   }
 });
 
@@ -144,8 +176,7 @@ router.get('/ops-dashboard', async (req, res) => {
       deadLetters,
     });
   } catch (error) {
-    console.error('Ops dashboard error:', error.message);
-    res.status(500).json({ error: 'Internal ops dashboard error' });
+    respondInternalError(req, res, 'Ops dashboard error', 'Internal ops dashboard error', error);
   }
 });
 
@@ -160,8 +191,7 @@ router.get('/queue/dead-letters', async (req, res) => {
     });
     res.json({ items });
   } catch (error) {
-    console.error('Dead letter list error:', error.message);
-    res.status(500).json({ error: 'Internal dead letter list error' });
+    respondInternalError(req, res, 'Dead letter list error', 'Internal dead letter list error', error);
   }
 });
 
@@ -178,7 +208,11 @@ router.post('/queue/:id/retry', async (req, res) => {
     });
 
     if (!result) {
-      return res.status(404).json({ error: 'Command not found or not retryable' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Command not found or not retryable',
+        fallbackCode: 'not_found',
+      });
     }
 
     await appendAdminAuditLog(req, adminUser, 'admin_queue_retry', {
@@ -189,8 +223,7 @@ router.post('/queue/:id/retry', async (req, res) => {
 
     res.json({ ok: true, item: result });
   } catch (error) {
-    console.error('Queue retry error:', error.message);
-    res.status(500).json({ error: 'Internal queue retry error' });
+    respondInternalError(req, res, 'Queue retry error', 'Internal queue retry error', error);
   }
 });
 
@@ -206,7 +239,11 @@ router.post('/queue/:id/dead-letter', async (req, res) => {
     });
 
     if (!result) {
-      return res.status(404).json({ error: 'Command not found or not dead-letterable' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Command not found or not dead-letterable',
+        fallbackCode: 'not_found',
+      });
     }
 
     await appendAdminAuditLog(req, adminUser, 'admin_queue_dead_letter', {
@@ -217,8 +254,7 @@ router.post('/queue/:id/dead-letter', async (req, res) => {
 
     res.json({ ok: true, item: result });
   } catch (error) {
-    console.error('Queue dead-letter error:', error.message);
-    res.status(500).json({ error: 'Internal queue dead-letter error' });
+    respondInternalError(req, res, 'Queue dead-letter error', 'Internal queue dead-letter error', error);
   }
 });
 
@@ -233,7 +269,11 @@ router.post('/sessions/:sessionId/revoke', async (req, res) => {
     );
 
     if (!revoked) {
-      return res.status(404).json({ error: 'Session not found or already revoked' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Session not found or already revoked',
+        fallbackCode: 'not_found',
+      });
     }
 
     await appendAdminAuditLog(req, adminUser, 'admin_revoke_session', {
@@ -244,8 +284,7 @@ router.post('/sessions/:sessionId/revoke', async (req, res) => {
 
     res.json({ ok: true, session: revoked });
   } catch (error) {
-    console.error('Admin revoke session error:', error.message);
-    res.status(500).json({ error: 'Internal revoke session error' });
+    respondInternalError(req, res, 'Admin revoke session error', 'Internal revoke session error', error);
   }
 });
 
@@ -260,14 +299,17 @@ router.post('/agents/:agentId/pause', async (req, res) => {
     });
 
     if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Agent not found',
+        fallbackCode: 'not_found',
+      });
     }
 
     await appendAdminAuditLog(req, adminUser, 'admin_pause_agent', { agentId: agent.id });
     res.json({ ok: true, agent });
   } catch (error) {
-    console.error('Admin pause agent error:', error.message);
-    res.status(500).json({ error: 'Internal pause agent error' });
+    respondInternalError(req, res, 'Admin pause agent error', 'Internal pause agent error', error);
   }
 });
 
@@ -282,14 +324,17 @@ router.post('/agents/:agentId/resume', async (req, res) => {
     });
 
     if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Agent not found',
+        fallbackCode: 'not_found',
+      });
     }
 
     await appendAdminAuditLog(req, adminUser, 'admin_resume_agent', { agentId: agent.id });
     res.json({ ok: true, agent });
   } catch (error) {
-    console.error('Admin resume agent error:', error.message);
-    res.status(500).json({ error: 'Internal resume agent error' });
+    respondInternalError(req, res, 'Admin resume agent error', 'Internal resume agent error', error);
   }
 });
 
@@ -300,7 +345,11 @@ router.post('/agents/:agentId/clear-quarantine', async (req, res) => {
   try {
     const agent = await agentRepository.getAgentById(req.params.agentId);
     if (!agent) {
-      return res.status(404).json({ error: 'Agent not found' });
+      return respondKnownError(req, res, {
+        statusCode: 404,
+        publicMessage: 'Agent not found',
+        fallbackCode: 'not_found',
+      });
     }
 
     await agentRepository.resetAgentEndpointHealth(req.params.agentId);
@@ -312,8 +361,7 @@ router.post('/agents/:agentId/clear-quarantine', async (req, res) => {
     await appendAdminAuditLog(req, adminUser, 'admin_clear_agent_quarantine', { agentId: req.params.agentId });
     res.json({ ok: true, agent: updatedAgent || agent });
   } catch (error) {
-    console.error('Admin clear quarantine error:', error.message);
-    res.status(500).json({ error: 'Internal clear quarantine error' });
+    respondInternalError(req, res, 'Admin clear quarantine error', 'Internal clear quarantine error', error);
   }
 });
 

@@ -1,26 +1,17 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const authSessionRepository = require('../database/auth-sessions');
+const { normalizeEmail, normalizeText } = require('../shared/normalize');
 
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
-}
-
-function normalizeEmail(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim().toLowerCase();
-  return trimmed || null;
+function toAuthRequestUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    picture: user.picture,
+    sessionId: user.sessionId,
+    sid: user.sessionId,
+  };
 }
 
 async function requireAuth(req, res, next) {
@@ -32,14 +23,7 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid, expired, or revoked session' });
   }
 
-  req.authUser = {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    picture: user.picture,
-    sessionId: user.sessionId,
-    sid: user.sessionId,
-  };
+  req.authUser = toAuthRequestUser(user);
   req.authSession = user.session || null;
   return next();
 }
@@ -130,16 +114,9 @@ async function requireAdmin(req, res, next) {
     return res.status(403).json({ error: 'Forbidden: admin access required' });
   }
 
-  req.authUser = {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    picture: user.picture,
-    sessionId: user.sessionId,
-    sid: user.sessionId,
-  };
+  req.authUser = toAuthRequestUser(user);
   req.authSession = user.session || null;
   return next();
 }
 
-module.exports = { requireAuth, requireAdmin, getAuthenticatedUser, decodeAuthToken };
+module.exports = { requireAuth, requireAdmin, getAuthenticatedUser, decodeAuthToken, toAuthRequestUser };

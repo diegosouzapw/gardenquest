@@ -1,0 +1,1868 @@
+openapi: 3.0.3
+info:
+  title: GardenQuest Backend API
+  version: 1.0.0
+  description: |
+    Especificacao OpenAPI das rotas HTTP atualmente expostas pelos entrypoints
+    `backend/server.js` (modo legado) e `backend/api-server.js` (modo API + Worker).
+
+    Observacoes importantes:
+    - Autenticacao principal via cookie `auth_token` (JWT + sessao revogavel).
+    - Parte das rotas ainda usa erro legado `{ "error": "..." }`.
+    - Rotas de sistema (`/api/v1/system/*`) usam payload padronizado com correlation-id.
+    - As rotas `/api/v1/games/garden-quest/*` sao alias das rotas `/api/v1/ai-game/*`.
+servers:
+  - url: http://localhost:8080
+    description: Desenvolvimento local
+
+tags:
+  - name: health
+    description: Readiness e health checks
+  - name: auth
+    description: Fluxo de autenticacao Google OAuth + sessao
+  - name: platform
+    description: Bootstrap e eventos da plataforma
+  - name: ai-game
+    description: Estado, stream e comandos do Garden Quest
+  - name: agents
+    description: Gestao de agentes autonomos
+  - name: system
+    description: Dashboard e operacoes administrativas
+
+paths:
+  /:
+    get:
+      tags: [health]
+      summary: Readiness endpoint
+      operationId: getRoot
+      responses:
+        '200':
+          description: Servidor pronto para receber requests.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RootResponse'
+
+  /health:
+    get:
+      tags: [health]
+      summary: Health check do runtime
+      operationId: getHealth
+      responses:
+        '200':
+          description: Estado de saude (legacy ou API mode).
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/HealthLegacyResponse'
+                  - $ref: '#/components/schemas/HealthApiResponse'
+
+  /auth/google:
+    get:
+      tags: [auth]
+      summary: Inicia login Google OAuth
+      operationId: startGoogleOAuth
+      parameters:
+        - in: query
+          name: redirect
+          required: false
+          schema:
+            type: string
+          description: "Path frontend de retorno (ex.: `/hub.html`)."
+      responses:
+        '302':
+          description: Redireciona para Google OAuth.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Cookie `oauth_state` com nonce anti-CSRF.
+            Location:
+              schema:
+                type: string
+
+  /auth/callback:
+    get:
+      tags: [auth]
+      summary: Callback OAuth
+      operationId: completeGoogleOAuth
+      parameters:
+        - in: query
+          name: code
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: state
+          required: false
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redireciona para frontend com sucesso/erro de auth.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Define/limpa `auth_token` e limpa `oauth_state`.
+            Location:
+              schema:
+                type: string
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Retorna perfil autenticado
+      operationId: getAuthMe
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Usuario autenticado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthMeResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+
+  /auth/sessions:
+    get:
+      tags: [auth]
+      summary: Lista sessoes ativas do usuario
+      operationId: listAuthSessions
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Lista de sessoes.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionsResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+
+  /auth/sessions/{sessionId}/revoke:
+    post:
+      tags: [auth]
+      summary: Revoga uma sessao do proprio usuario
+      operationId: revokeOwnAuthSession
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sessao revogada (ou estado final retornado).
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionRevokeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+
+  /auth/logout-all:
+    post:
+      tags: [auth]
+      summary: Revoga todas as sessoes do usuario
+      operationId: logoutAllSessions
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Logout global concluido.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutAllResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout da sessao atual
+      operationId: logoutCurrentSession
+      responses:
+        '200':
+          description: Logout concluido.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+
+  /api/v1/platform/bootstrap:
+    get:
+      tags: [platform]
+      summary: Bootstrap da plataforma para usuario autenticado
+      operationId: getPlatformBootstrap
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Payload de bootstrap da plataforma.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformBootstrapResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+
+  /api/v1/platform/games:
+    get:
+      tags: [platform]
+      summary: Lista jogos disponiveis
+      operationId: listPlatformGames
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Lista de jogos registrados na plataforma.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformGamesResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+
+  /api/v1/platform/events:
+    post:
+      tags: [platform]
+      summary: Registra evento de plataforma/jogo
+      operationId: trackPlatformEvent
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlatformEventRequest'
+      responses:
+        '201':
+          description: Evento registrado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tracked]
+                properties:
+                  tracked:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents:
+    get:
+      tags: [agents]
+      summary: Lista agentes do usuario autenticado
+      operationId: listAgents
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Lista de agentes.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+    post:
+      tags: [agents]
+      summary: Cria um novo agente
+      operationId: createAgent
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAgentRequest'
+      responses:
+        '201':
+          description: Agente criado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/policy:
+    post:
+      tags: [agents]
+      summary: Atualiza politica de governanca de um agente
+      operationId: updateAgentPolicy
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentPolicyPatch'
+      responses:
+        '200':
+          description: Politica atualizada.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/api-key:
+    post:
+      tags: [agents]
+      summary: Salva API key de provider para agente em modo hosted_api_key
+      operationId: storeAgentApiKey
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [apiKey]
+              properties:
+                apiKey:
+                  type: string
+      responses:
+        '200':
+          description: Chave armazenada com fingerprint.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, agentId, fingerprint]
+                properties:
+                  ok:
+                    type: boolean
+                  agentId:
+                    type: string
+                  fingerprint:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/endpoint:
+    post:
+      tags: [agents]
+      summary: Configura endpoint remoto de agente
+      operationId: configureAgentEndpoint
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEndpointRequest'
+      responses:
+        '200':
+          description: Endpoint configurado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, agentId, endpointConfigured]
+                properties:
+                  ok:
+                    type: boolean
+                  agentId:
+                    type: string
+                  endpointConfigured:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/pause:
+    post:
+      tags: [agents]
+      summary: Pausa agente
+      operationId: pauseAgent
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agente pausado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/resume:
+    post:
+      tags: [agents]
+      summary: Retoma agente
+      operationId: resumeAgent
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agente retomado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/agents/{id}/runs:
+    get:
+      tags: [agents]
+      summary: Lista execucoes (runs) do agente
+      operationId: listAgentRuns
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 30
+      responses:
+        '200':
+          description: Runs do agente.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent:
+                    $ref: '#/components/schemas/GenericObject'
+                  usageToday:
+                    $ref: '#/components/schemas/GenericObject'
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/public-state-live:
+    get:
+      tags: [ai-game]
+      summary: Estado publico para espectadores (sem auth)
+      operationId: getPublicStateLive
+      responses:
+        '200':
+          description: Snapshot/estado publico do mundo.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/public-events:
+    get:
+      tags: [ai-game]
+      summary: Feed de eventos publicos
+      operationId: listPublicGameEvents
+      parameters:
+        - in: query
+          name: sinceSeq
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Eventos publicos do runtime.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEventsResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/public-stream:
+    get:
+      tags: [ai-game]
+      summary: Stream SSE publico
+      operationId: streamPublicGameEvents
+      responses:
+        '200':
+          description: Conexao SSE estabelecida.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/stream:
+    get:
+      tags: [ai-game]
+      summary: Stream SSE autenticado de jogador
+      operationId: streamPlayerGameEvents
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Conexao SSE do jogador estabelecida.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/events:
+    get:
+      tags: [ai-game]
+      summary: Feed de eventos para jogador autenticado
+      operationId: listPlayerGameEvents
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: query
+          name: sinceSeq
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Eventos visiveis ao jogador.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEventsResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/public-state:
+    get:
+      tags: [ai-game]
+      summary: Estado publico contextualizado para usuario autenticado
+      operationId: getPublicStateAuthenticated
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Estado publico para cliente autenticado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/bootstrap-state:
+    get:
+      tags: [ai-game]
+      summary: Estado inicial do jogo
+      operationId: getBootstrapState
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Bootstrap para iniciar cliente do jogo.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/ai-game/command:
+    post:
+      tags: [ai-game]
+      summary: Envia comando de jogador para o runtime
+      operationId: sendPlayerCommand
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlayerCommandRequest'
+      responses:
+        '200':
+          description: Comando aceito/executado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/public-state-live:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/public-state-live
+      operationId: getPublicStateLiveAlias
+      responses:
+        '200':
+          $ref: '#/components/responses/GenericSuccessResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/public-events:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/public-events
+      operationId: listPublicGameEventsAlias
+      parameters:
+        - in: query
+          name: sinceSeq
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Eventos publicos do runtime.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEventsResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/public-stream:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/public-stream
+      operationId: streamPublicGameEventsAlias
+      responses:
+        '200':
+          description: Conexao SSE estabelecida.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/stream:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/stream
+      operationId: streamPlayerGameEventsAlias
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Conexao SSE do jogador estabelecida.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/events:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/events
+      operationId: listPlayerGameEventsAlias
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: query
+          name: sinceSeq
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Eventos visiveis ao jogador.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeEventsResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/public-state:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/public-state
+      operationId: getPublicStateAuthenticatedAlias
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          $ref: '#/components/responses/GenericSuccessResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/bootstrap-state:
+    get:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/bootstrap-state
+      operationId: getBootstrapStateAlias
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          $ref: '#/components/responses/GenericSuccessResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/games/garden-quest/command:
+    post:
+      tags: [ai-game]
+      summary: Alias de /api/v1/ai-game/command
+      operationId: sendPlayerCommandAlias
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlayerCommandRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/GenericSuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/sync:
+    post:
+      tags: [system]
+      summary: Sincroniza evento de log no backend
+      operationId: syncSystemLog
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  maxLength: 64
+                category:
+                  type: string
+                  enum: [site, game]
+      responses:
+        '201':
+          description: Evento sincronizado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [synced]
+                properties:
+                  synced:
+                    type: boolean
+                    example: true
+        '400':
+          $ref: '#/components/responses/BadRequestResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/dashboard:
+    get:
+      tags: [system]
+      summary: Dashboard administrativo consolidado
+      operationId: getSystemDashboard
+      description: Requer usuario autenticado e allowlist admin (`ADMIN_GOOGLE_EMAILS`).
+      responses:
+        '200':
+          description: Dados do dashboard.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/ops-dashboard:
+    get:
+      tags: [system]
+      summary: Dashboard operacional (sessoes, agentes, fila)
+      operationId: getSystemOpsDashboard
+      description: Requer usuario autenticado e allowlist admin (`ADMIN_GOOGLE_EMAILS`).
+      responses:
+        '200':
+          description: Overview operacional.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionOverview:
+                    $ref: '#/components/schemas/GenericObject'
+                  recentSessions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+                  agentHealth:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+                  queueOverview:
+                    $ref: '#/components/schemas/GenericObject'
+                  deadLetters:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/queue/dead-letters:
+    get:
+      tags: [system]
+      summary: Lista comandos em dead letter queue
+      operationId: listDeadLetterQueue
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        '200':
+          description: Itens em dead letter.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/queue/{id}/retry:
+    post:
+      tags: [system]
+      summary: Reenfileira comando para nova tentativa
+      operationId: retryQueueCommand
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delayMs:
+                  type: integer
+                  minimum: 0
+                  maximum: 30000
+                resetAttempts:
+                  type: boolean
+      responses:
+        '200':
+          description: Comando reenfileirado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  item:
+                    $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/queue/{id}/dead-letter:
+    post:
+      tags: [system]
+      summary: Move comando para dead letter
+      operationId: deadLetterQueueCommand
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 120
+      responses:
+        '200':
+          description: Comando marcado como dead letter.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  item:
+                    $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/sessions/{sessionId}/revoke:
+    post:
+      tags: [system]
+      summary: Revoga sessao de usuario via admin
+      operationId: adminRevokeSession
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 64
+      responses:
+        '200':
+          description: Sessao revogada.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  session:
+                    $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/agents/{agentId}/pause:
+    post:
+      tags: [system]
+      summary: Pausa agente via admin
+      operationId: adminPauseAgent
+      parameters:
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agente pausado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/agents/{agentId}/resume:
+    post:
+      tags: [system]
+      summary: Retoma agente via admin
+      operationId: adminResumeAgent
+      parameters:
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agente retomado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+  /api/v1/system/agents/{agentId}/clear-quarantine:
+    post:
+      tags: [system]
+      summary: Limpa quarantine/health de endpoint do agente
+      operationId: adminClearAgentQuarantine
+      parameters:
+        - in: path
+          name: agentId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Quarantine limpa e agente atualizado.
+          headers:
+            x-correlation-id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentMutationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/ForbiddenResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundResponse'
+        '500':
+          $ref: '#/components/responses/InternalErrorResponse'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_token
+
+  headers:
+    CorrelationId:
+      description: Correlation id propagado pelo middleware `request-context`.
+      schema:
+        type: string
+
+  responses:
+    GenericSuccessResponse:
+      description: Resposta JSON de sucesso (shape dependente da rota).
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/GenericObject'
+
+    BadRequestResponse:
+      description: Requisicao invalida.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    UnauthorizedResponse:
+      description: Sessao ausente, expirada ou revogada.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    ForbiddenResponse:
+      description: Usuario sem permissao para o recurso.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFoundResponse:
+      description: Recurso nao encontrado.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    ServiceUnavailableResponse:
+      description: Dependencia/feature indisponivel no ambiente atual.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalErrorResponse:
+      description: Erro interno nao esperado.
+      headers:
+        x-correlation-id:
+          $ref: '#/components/headers/CorrelationId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    RootResponse:
+      type: object
+      required: [message, status]
+      properties:
+        message:
+          type: string
+          example: GardenQuest API Server
+        status:
+          type: string
+          example: ready
+
+    HealthLegacyResponse:
+      type: object
+      required: [status, timestamp, runtime]
+      properties:
+        status:
+          type: string
+          example: ok
+        timestamp:
+          type: string
+          format: date-time
+        runtime:
+          type: object
+          required: [mode]
+          properties:
+            mode:
+              type: string
+              example: legacy-monolith
+            tick:
+              type: integer
+            playersOnline:
+              type: integer
+            userAgentsOnline:
+              type: integer
+            pendingAgentDecisions:
+              type: integer
+            realmLease:
+              $ref: '#/components/schemas/GenericObject'
+
+    HealthApiResponse:
+      type: object
+      required: [status, timestamp, runtime, realtime]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        runtime:
+          type: object
+          properties:
+            mode:
+              type: string
+              example: api
+            realmId:
+              type: string
+            snapshotVersion:
+              type: integer
+            snapshotUpdatedAt:
+              type: string
+              format: date-time
+              nullable: true
+            snapshotStale:
+              type: boolean
+        realtime:
+          $ref: '#/components/schemas/GenericObject'
+
+    AuthMeResponse:
+      type: object
+      required: [id, name, email, isAdmin]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+        picture:
+          type: string
+          nullable: true
+        isAdmin:
+          type: boolean
+
+    SessionRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        userEmail:
+          type: string
+          nullable: true
+        userName:
+          type: string
+          nullable: true
+        ip:
+          type: string
+          nullable: true
+        userAgent:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          nullable: true
+        issuedAt:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+          nullable: true
+        lastSeenAt:
+          type: string
+          nullable: true
+        revokedAt:
+          type: string
+          nullable: true
+        revokeReason:
+          type: string
+          nullable: true
+        isCurrent:
+          type: boolean
+
+    AuthSessionsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionRecord'
+
+    AuthSessionRevokeResponse:
+      type: object
+      required: [ok, revoked, session]
+      properties:
+        ok:
+          type: boolean
+        revoked:
+          type: boolean
+        session:
+          $ref: '#/components/schemas/SessionRecord'
+
+    LogoutAllResponse:
+      type: object
+      required: [ok, revokedCount]
+      properties:
+        ok:
+          type: boolean
+        revokedCount:
+          type: integer
+
+    LogoutResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          example: Logged out successfully
+
+    PlatformUser:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        picture:
+          type: string
+          nullable: true
+        sessionId:
+          type: string
+          nullable: true
+        isAdmin:
+          type: boolean
+
+    PlatformGame:
+      type: object
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        href:
+          type: string
+        description:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+
+    PlatformBootstrapResponse:
+      type: object
+      required: [platform, user, games]
+      properties:
+        platform:
+          type: object
+          required: [name, hubPath, loginPath]
+          properties:
+            name:
+              type: string
+            hubPath:
+              type: string
+            loginPath:
+              type: string
+        user:
+          $ref: '#/components/schemas/PlatformUser'
+        games:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlatformGame'
+
+    PlatformGamesResponse:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlatformGame'
+
+    PlatformEventRequest:
+      type: object
+      required: [event]
+      properties:
+        event:
+          type: string
+          description: Nome normalizado do evento (`[a-z0-9._-]{2,64}`).
+        gameSlug:
+          type: string
+          nullable: true
+        details:
+          type: string
+          maxLength: 512
+          nullable: true
+
+    CreateAgentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 64
+        mode:
+          type: string
+          enum: [server_managed, hosted_api_key, remote_endpoint, omniroute]
+        provider:
+          type: string
+          example: openai
+        routeHint:
+          type: string
+          maxLength: 64
+          nullable: true
+        policy:
+          $ref: '#/components/schemas/AgentPolicyPatch'
+
+    AgentPolicyPatch:
+      type: object
+      properties:
+        dailyRunBudget:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        minDecisionIntervalMs:
+          type: integer
+          minimum: 250
+          maximum: 600000
+        failureThreshold:
+          type: integer
+          minimum: 1
+          maximum: 100
+        cooldownMs:
+          type: integer
+          minimum: 1000
+          maximum: 3600000
+        providerFailureThreshold:
+          type: integer
+          minimum: 1
+          maximum: 200
+        providerCooldownMs:
+          type: integer
+          minimum: 1000
+          maximum: 3600000
+
+    AgentEndpointRequest:
+      type: object
+      properties:
+        baseUrl:
+          type: string
+          format: uri
+          description: URL HTTPS obrigatoria.
+        authMode:
+          type: string
+          enum: [none, bearer]
+          default: none
+        authSecret:
+          type: string
+          description: Obrigatorio quando `authMode=bearer` e sem segredo previamente salvo.
+        timeoutMs:
+          type: integer
+          minimum: 250
+          maximum: 30000
+
+    AgentMutationResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        agent:
+          $ref: '#/components/schemas/GenericObject'
+
+    RuntimeEventsResponse:
+      type: object
+      required: [realmId, sinceSeq, untilSeq, entries]
+      properties:
+        realmId:
+          type: string
+        sinceSeq:
+          type: integer
+        untilSeq:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenericObject'
+
+    PlayerCommandRequest:
+      type: object
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          enum: [set_input, perform_action, use_action, toggle_fruit, chat, update_profile]
+        payload:
+          oneOf:
+            - type: object
+              properties:
+                moveX:
+                  type: number
+                  minimum: -1
+                  maximum: 1
+                moveZ:
+                  type: number
+                  minimum: -1
+                  maximum: 1
+                isRunning:
+                  type: boolean
+            - type: object
+              properties:
+                message:
+                  type: string
+                  maxLength: 280
+            - type: object
+              properties:
+                nickname:
+                  type: string
+                  maxLength: 24
+                outfitColor:
+                  type: string
+                  pattern: '^#[0-9a-fA-F]{6}$'
+            - type: object
+              additionalProperties: true
+
+    LegacyError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    CorrelatedError:
+      type: object
+      required: [error, code, errorId, correlationId]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          example: internal_error
+        errorId:
+          type: string
+          nullable: true
+        correlationId:
+          type: string
+          nullable: true
+
+    ErrorResponse:
+      oneOf:
+        - $ref: '#/components/schemas/LegacyError'
+        - $ref: '#/components/schemas/CorrelatedError'
+
+    GenericObject:
+      type: object
+      additionalProperties: true

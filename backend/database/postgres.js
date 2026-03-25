@@ -1,9 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
+const pgMigrate = require('node-pg-migrate').default;
 const config = require('../config');
 
 let pool;
+let schemaMigrationsCompleted = false;
 
 function getConnectionString() {
   if (!config.SUPABASE_DB_URL) {
@@ -81,6 +83,29 @@ function getStandaloneClientConfig() {
   };
 }
 
+async function runDatabaseMigrations(database) {
+  if (schemaMigrationsCompleted) {
+    return;
+  }
+
+  await pgMigrate({
+    dbClient: database,
+    dir: path.resolve(__dirname, '../migrations'),
+    migrationsTable: 'pgmigrations',
+    direction: 'up',
+    count: Infinity,
+    checkOrder: true,
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: (message) => console.warn(message),
+      error: (message) => console.error(message),
+    },
+  });
+
+  schemaMigrationsCompleted = true;
+}
+
 async function applyLockedDownApiPolicy(database, tableName, policyName) {
   await database.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
 
@@ -114,6 +139,13 @@ async function applyLockedDownApiPolicy(database, tableName, policyName) {
 async function verifyDatabaseConnection() {
   const database = getPool();
   await database.query('SELECT 1');
+
+  try {
+    await runDatabaseMigrations(database);
+    return;
+  } catch (migrationError) {
+    console.warn(`Migration runner unavailable, falling back to legacy bootstrap: ${migrationError.message}`);
+  }
 
   await database.query(`
     CREATE TABLE IF NOT EXISTS public.event_logs (

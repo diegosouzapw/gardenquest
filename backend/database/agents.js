@@ -63,6 +63,8 @@ async function ensureAgentTables() {
       base_url text NOT NULL,
       auth_mode text NOT NULL DEFAULT 'none',
       auth_secret text,
+      auth_secret_payload text,
+      auth_secret_fingerprint text,
       timeout_ms integer NOT NULL DEFAULT 2500,
       created_at timestamptz NOT NULL DEFAULT timezone('utc', now()),
       updated_at timestamptz NOT NULL DEFAULT timezone('utc', now())
@@ -72,6 +74,16 @@ async function ensureAgentTables() {
   await db.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_endpoints_agent_id
     ON public.agent_endpoints (agent_id)
+  `);
+
+  await db.query(`
+    ALTER TABLE public.agent_endpoints
+    ADD COLUMN IF NOT EXISTS auth_secret_payload text
+  `);
+
+  await db.query(`
+    ALTER TABLE public.agent_endpoints
+    ADD COLUMN IF NOT EXISTS auth_secret_fingerprint text
   `);
 
   await db.query(`
@@ -260,21 +272,46 @@ async function getAgentSecret(agentId) {
   return result.rows[0] || null;
 }
 
-async function saveAgentEndpoint({ agentId, baseUrl, authMode = 'none', authSecret = null, timeoutMs = 2500 }) {
+async function saveAgentEndpoint({
+  agentId,
+  baseUrl,
+  authMode = 'none',
+  authSecretPayload = null,
+  authSecretFingerprint = null,
+  timeoutMs = 2500,
+}) {
   const db = getPool();
   await db.query(
     `
-      INSERT INTO public.agent_endpoints (agent_id, base_url, auth_mode, auth_secret, timeout_ms, updated_at)
-      VALUES ($1, $2, $3, $4, $5, timezone('utc', now()))
+      INSERT INTO public.agent_endpoints (
+        agent_id,
+        base_url,
+        auth_mode,
+        auth_secret,
+        auth_secret_payload,
+        auth_secret_fingerprint,
+        timeout_ms,
+        updated_at
+      )
+      VALUES ($1, $2, $3, NULL, $4, $5, $6, timezone('utc', now()))
       ON CONFLICT (agent_id)
       DO UPDATE SET
         base_url = EXCLUDED.base_url,
         auth_mode = EXCLUDED.auth_mode,
-        auth_secret = EXCLUDED.auth_secret,
+        auth_secret = NULL,
+        auth_secret_payload = EXCLUDED.auth_secret_payload,
+        auth_secret_fingerprint = EXCLUDED.auth_secret_fingerprint,
         timeout_ms = EXCLUDED.timeout_ms,
         updated_at = timezone('utc', now())
     `,
-    [agentId, baseUrl, authMode, authSecret, Math.max(500, Math.trunc(timeoutMs || 2500))]
+    [
+      agentId,
+      baseUrl,
+      authMode,
+      authSecretPayload,
+      authSecretFingerprint,
+      Math.max(500, Math.trunc(timeoutMs || 2500)),
+    ]
   );
 }
 
@@ -282,7 +319,14 @@ async function getAgentEndpointByAgentId(agentId) {
   const db = getPool();
   const result = await db.query(
     `
-      SELECT agent_id AS "agentId", base_url AS "baseUrl", auth_mode AS "authMode", auth_secret AS "authSecret", timeout_ms AS "timeoutMs"
+      SELECT
+        agent_id AS "agentId",
+        base_url AS "baseUrl",
+        auth_mode AS "authMode",
+        auth_secret AS "authSecret",
+        auth_secret_payload AS "authSecretPayload",
+        auth_secret_fingerprint AS "authSecretFingerprint",
+        timeout_ms AS "timeoutMs"
       FROM public.agent_endpoints
       WHERE agent_id = $1
       LIMIT 1

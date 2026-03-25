@@ -224,6 +224,8 @@ create table if not exists public.agent_endpoints (
   base_url text not null,
   auth_mode text not null default 'none',
   auth_secret text,
+  auth_secret_payload text,
+  auth_secret_fingerprint text,
   timeout_ms integer not null default 2500,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
@@ -231,6 +233,12 @@ create table if not exists public.agent_endpoints (
 
 create unique index if not exists uq_agent_endpoints_agent_id
   on public.agent_endpoints (agent_id);
+
+alter table public.agent_endpoints
+  add column if not exists auth_secret_payload text;
+
+alter table public.agent_endpoints
+  add column if not exists auth_secret_fingerprint text;
 
 create table if not exists public.agent_runs (
   id bigserial primary key,
