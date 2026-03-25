@@ -1,6 +1,12 @@
 const config = require('../../config');
 const { buildRuntimeEvents } = require('./WorldDeltaService');
 
+/**
+ * Classifies worker command errors into retry plan metadata.
+ * @param {Error & { code?: string, statusCode?: number }} error
+ * @param {{ attempts?: number }} command
+ * @returns {{ retryable: boolean, errorCode: string, delayMs: number }}
+ */
 function classifyWorkerCommandError(error, command) {
   const code = String(error?.code || error?.statusCode || 'worker_error').toLowerCase();
 
@@ -18,6 +24,9 @@ function classifyWorkerCommandError(error, command) {
   return { retryable: true, errorCode: code, delayMs };
 }
 
+/**
+ * Background worker responsible for processing world command queue and flushing snapshots.
+ */
 class WorldRuntimeWorker {
   constructor({
     aiGameEngine,
@@ -44,12 +53,21 @@ class WorldRuntimeWorker {
     this.realmLeaseHandle = null;
     this.commandLoopInFlight = false;
     this.snapshotLoopInFlight = false;
+    this.stopping = false;
     this.busUnsubscribe = null;
     this.busWakeups = 0;
     this.handleCommandNotification = this.handleCommandNotification.bind(this);
   }
 
+  /**
+   * Starts engine runtime, leader lease heartbeat, queue loop and snapshot flush loop.
+   * @returns {Promise<void>}
+   */
   async start() {
+    if (this.commandHandle || this.snapshotHandle) {
+      return;
+    }
+    this.stopping = false;
     this.aiGameEngine.start();
 
     if (this.realmLeaseService) {
@@ -89,15 +107,22 @@ class WorldRuntimeWorker {
         this.logger.error('World command queue loop failed:', error.message);
       });
     }, this.commandPollMs);
+    this.commandHandle.unref?.();
 
     this.snapshotHandle = setInterval(() => {
       this.flushSnapshots().catch((error) => {
         this.logger.error('World snapshot flush loop failed:', error.message);
       });
     }, this.snapshotFlushMs);
+    this.snapshotHandle.unref?.();
   }
 
+  /**
+   * Stops all loops, releases resources and shuts down the game engine.
+   * @returns {Promise<void>}
+   */
   async stop() {
+    this.stopping = true;
     if (this.commandHandle) {
       clearInterval(this.commandHandle);
       this.commandHandle = null;
@@ -129,6 +154,11 @@ class WorldRuntimeWorker {
     await this.aiGameEngine.stop();
   }
 
+  /**
+   * Handles command bus notifications and triggers immediate queue processing for this realm.
+   * @param {{ realmId?: string }} [payload={}]
+   * @returns {Promise<void>}
+   */
   async handleCommandNotification(payload = {}) {
     if (payload.realmId && payload.realmId !== this.realmId) {
       return;
@@ -138,6 +168,10 @@ class WorldRuntimeWorker {
     await this.processCommandQueue();
   }
 
+  /**
+   * Returns whether this worker is currently leader for command/snapshot processing.
+   * @returns {boolean}
+   */
   isLeader() {
     if (this.realmLeaseService) {
       return !config.AGENT_WORLD_REQUIRE_LEASE || Boolean(this.realmLeaseService.getSnapshot()?.isLeader);
@@ -148,6 +182,10 @@ class WorldRuntimeWorker {
     return !config.AGENT_WORLD_REQUIRE_LEASE || Boolean(lease.isLeader);
   }
 
+  /**
+   * Returns identifier used to claim queue commands.
+   * @returns {string}
+   */
   getClaimedBy() {
     if (this.realmLeaseService) {
       return this.realmLeaseService.getSnapshot()?.localInstanceId || `worker:${process.pid}`;
@@ -157,8 +195,12 @@ class WorldRuntimeWorker {
     return runtime.realmLease?.localInstanceId || `worker:${process.pid}`;
   }
 
+  /**
+   * Claims and executes pending commands, applying retry/dead-letter policy on failures.
+   * @returns {Promise<void>}
+   */
   async processCommandQueue() {
-    if (this.commandLoopInFlight || !this.isLeader()) {
+    if (this.stopping || this.commandLoopInFlight || !this.isLeader()) {
       return;
     }
 
@@ -213,6 +255,11 @@ class WorldRuntimeWorker {
     }
   }
 
+  /**
+   * Dispatches a claimed command into the game engine runtime.
+   * @param {{ commandType: string, payloadJson?: object, actorId?: string }} command
+   * @returns {Promise<object>}
+   */
   async applyCommand(command) {
     const payload = command.payloadJson || {};
 
@@ -230,8 +277,12 @@ class WorldRuntimeWorker {
     }
   }
 
+  /**
+   * Exports current engine state and persists snapshot + runtime events in the repository.
+   * @returns {Promise<void>}
+   */
   async flushSnapshots() {
-    if (this.snapshotLoopInFlight || !this.isLeader()) {
+    if (this.stopping || this.snapshotLoopInFlight || !this.isLeader()) {
       return;
     }
 

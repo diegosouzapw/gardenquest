@@ -1,17 +1,36 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
+const express = require('express');
 const jwt = require('jsonwebtoken');
+const supertest = require('supertest');
 
 const config = require('../config');
+const createAiGameRoutes = require('../routes/ai-game');
 const { AgentWorldScheduler } = require('../services/agents/AgentWorldScheduler');
 const { RealmLeaseService } = require('../services/realm/RealmLeaseService');
 const { SecretVault } = require('../services/crypto/SecretVault');
+const { resolveNpcSystemPrompt, DEFAULT_NPC_SYSTEM_PROMPT } = require('../services/openai-client');
 const { AgentDecisionService } = require('../services/agents/AgentDecisionService');
 const { AgentGovernanceService } = require('../services/agents/AgentGovernanceService');
 const { AgentModerationService } = require('../services/agents/AgentModerationService');
+const { AgentManagementService } = require('../services/agents/AgentManagementService');
 const { WorldEventStreamService } = require('../services/world/WorldEventStreamService');
-const { classifyWorkerCommandError } = require('../services/world/WorldRuntimeWorker');
-const { decodeAuthToken } = require('../middleware/authenticate');
+const { WorldRuntimeWorker, classifyWorkerCommandError } = require('../services/world/WorldRuntimeWorker');
+const { WorldRuntimeGateway } = require('../services/world/WorldRuntimeGateway');
+const { buildSnapshotDelta } = require('../services/world/WorldDeltaService');
+const { ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES } = require('../database/world-runtime');
+const {
+  LOCAL_FALLBACK_AGENT_SECRET_MASTER_KEY_HEX,
+  createRuntimeSecretVault,
+  initializeRuntimeDatabase,
+  resolveAgentSecretMasterKeyHex,
+} = require('../bootstrap/runtime-bootstrap');
+const { decodeAuthToken, toAuthRequestUser } = require('../middleware/authenticate');
+const { buildErrorResponse, createAppError } = require('../shared/errors');
+const { requestContext, normalizeCorrelationId } = require('../middleware/request-context');
 
 function waitNextTick() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -138,6 +157,129 @@ test('secret vault rejects invalid master key length', () => {
   );
 });
 
+test('secret vault encryptSecret and decryptPayload work as a generic primitive', () => {
+  const vault = new SecretVault({
+    masterKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    agentRepository: {},
+  });
+
+  const encrypted = vault.encryptSecret('  endpoint-token-123  ');
+  const revealed = vault.decryptPayload(encrypted.payload);
+
+  assert.equal(revealed, 'endpoint-token-123');
+  assert.equal(encrypted.fingerprint, vault.buildFingerprint('endpoint-token-123'));
+});
+
+test('openai client loads versioned npc prompt from backend/prompts', () => {
+  const previousVersion = config.OPENAI_NPC_SYSTEM_PROMPT_VERSION;
+  const previousFile = config.OPENAI_NPC_SYSTEM_PROMPT_FILE;
+
+  try {
+    config.OPENAI_NPC_SYSTEM_PROMPT_VERSION = 'v1';
+    config.OPENAI_NPC_SYSTEM_PROMPT_FILE = '';
+
+    const resolved = resolveNpcSystemPrompt({
+      forceReload: true,
+      logger: { warn() {} },
+    });
+
+    assert.equal(resolved.version, 'v1');
+    assert.equal(resolved.source, 'file');
+    assert.ok(resolved.instructions.includes('server-authoritative multiplayer garden game'));
+  } finally {
+    config.OPENAI_NPC_SYSTEM_PROMPT_VERSION = previousVersion;
+    config.OPENAI_NPC_SYSTEM_PROMPT_FILE = previousFile;
+  }
+});
+
+test('openai client falls back to embedded prompt when configured file does not exist', () => {
+  const previousVersion = config.OPENAI_NPC_SYSTEM_PROMPT_VERSION;
+  const previousFile = config.OPENAI_NPC_SYSTEM_PROMPT_FILE;
+
+  try {
+    config.OPENAI_NPC_SYSTEM_PROMPT_VERSION = 'v404';
+    config.OPENAI_NPC_SYSTEM_PROMPT_FILE = 'backend/prompts/missing-npc-prompt.md';
+
+    const resolved = resolveNpcSystemPrompt({
+      forceReload: true,
+      logger: { warn() {} },
+    });
+
+    assert.equal(resolved.source, 'fallback');
+    assert.equal(resolved.instructions, DEFAULT_NPC_SYSTEM_PROMPT);
+  } finally {
+    config.OPENAI_NPC_SYSTEM_PROMPT_VERSION = previousVersion;
+    config.OPENAI_NPC_SYSTEM_PROMPT_FILE = previousFile;
+  }
+});
+
+test('agent management service rejects endpoint URLs without https', async () => {
+  let savedEndpoint = null;
+  const service = new AgentManagementService({
+    secretVault: null,
+    agentRepository: {
+      async getAgentByIdForOwner() {
+        return { id: 'agent-01', ownerUserId: 'user-01', mode: 'remote_endpoint' };
+      },
+      async getAgentEndpointByAgentId() {
+        return null;
+      },
+      async saveAgentEndpoint(payload) {
+        savedEndpoint = payload;
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.configureEndpoint({
+      ownerUserId: 'user-01',
+      agentId: 'agent-01',
+      endpoint: { baseUrl: 'http://insecure.example.com' },
+    }),
+    (error) => error && error.statusCode === 400 && /https/i.test(error.message)
+  );
+  assert.equal(savedEndpoint, null);
+});
+
+test('agent management service stores bearer endpoint secret as encrypted payload', async () => {
+  let savedEndpoint = null;
+  const vault = new SecretVault({
+    masterKeyHex: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    agentRepository: {},
+  });
+  const service = new AgentManagementService({
+    secretVault: vault,
+    agentRepository: {
+      async getAgentByIdForOwner() {
+        return { id: 'agent-02', ownerUserId: 'user-01', mode: 'remote_endpoint' };
+      },
+      async getAgentEndpointByAgentId() {
+        return null;
+      },
+      async saveAgentEndpoint(payload) {
+        savedEndpoint = payload;
+      },
+    },
+  });
+
+  await service.configureEndpoint({
+    ownerUserId: 'user-01',
+    agentId: 'agent-02',
+    endpoint: {
+      baseUrl: 'https://api.example.com/agent',
+      authMode: 'bearer',
+      authSecret: 'endpoint-secret-token',
+      timeoutMs: 2400,
+    },
+  });
+
+  assert.ok(savedEndpoint);
+  assert.equal(savedEndpoint.authMode, 'bearer');
+  assert.ok(savedEndpoint.authSecretPayload);
+  assert.ok(savedEndpoint.authSecretFingerprint);
+  assert.equal(savedEndpoint.authSecretPayload.includes('endpoint-secret-token'), false);
+});
+
 test('agent decision service returns fallback when governance blocks execution', async () => {
   const recorded = [];
   const repository = {
@@ -197,6 +339,20 @@ test('decodeAuthToken rejects payloads without user id', () => {
 
   const decoded = decodeAuthToken(token);
   assert.equal(decoded, null);
+});
+
+test('toAuthRequestUser keeps sessionId and sid synchronized', () => {
+  const mapped = toAuthRequestUser({
+    id: 'user-01',
+    name: 'Gardener',
+    email: 'user@example.com',
+    picture: 'https://example.com/avatar.png',
+    sessionId: 'session-01',
+  });
+
+  assert.equal(mapped.id, 'user-01');
+  assert.equal(mapped.sessionId, 'session-01');
+  assert.equal(mapped.sid, 'session-01');
 });
 
 test('governance enforces per-agent decision interval', async () => {
@@ -305,6 +461,58 @@ test('worker command classifier applies exponential backoff for generic errors',
   assert.ok(third.delayMs > first.delayMs);
 });
 
+test('admin retry policy does not include done commands', () => {
+  assert.deepEqual(ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES, ['dead_letter', 'error']);
+  assert.equal(ADMIN_RETRYABLE_WORLD_COMMAND_STATUSES.includes('done'), false);
+});
+
+test('runtime bootstrap resolves local fallback secret key when env key is absent', () => {
+  const key = resolveAgentSecretMasterKeyHex({
+    appEnv: 'local',
+    env: {},
+  });
+  assert.equal(key, LOCAL_FALLBACK_AGENT_SECRET_MASTER_KEY_HEX);
+});
+
+test('runtime bootstrap returns null secret vault outside local when key is absent', () => {
+  const vault = createRuntimeSecretVault({
+    appEnv: 'production',
+    env: {},
+    agentRepository: {},
+  });
+  assert.equal(vault, null);
+});
+
+test('runtime bootstrap initializes all configured repositories', async () => {
+  const calls = [];
+
+  await initializeRuntimeDatabase({
+    verifyDatabaseConnection: async () => calls.push('verify-db'),
+    agentRepository: {
+      async ensureAgentTables() {
+        calls.push('agents');
+      },
+    },
+    authSessionRepository: {
+      async ensureAuthSessionTable() {
+        calls.push('auth-sessions');
+      },
+    },
+    realmRepository: {
+      async ensureRealmLeaseTable() {
+        calls.push('realm');
+      },
+    },
+    worldRuntimeRepository: {
+      async ensureWorldRuntimeTables() {
+        calls.push('world-runtime');
+      },
+    },
+  });
+
+  assert.deepEqual(calls, ['verify-db', 'agents', 'auth-sessions', 'realm', 'world-runtime']);
+});
+
 test('world event stream wakes up immediately on runtime bus notifications', async () => {
   const service = new WorldEventStreamService({
     realmId: 'realm-01',
@@ -337,4 +545,389 @@ test('world event stream wakes up immediately on runtime bus notifications', asy
   assert.equal(service.busNotifications, 1);
   assert.equal(service.busWakeups, 1);
   assert.ok(elapsedMs < 50);
+});
+
+test('snapshot delta includes all dynamic world collections when they change', () => {
+  const previousSnapshot = {
+    world: {
+      trees: [{ id: 'tree-01', applesRemaining: 2 }],
+      droppedApples: [{ id: 'apple-01' }],
+      swords: [{ id: 'sword-01' }],
+      bows: [{ id: 'bow-01', arrowsRemaining: 2 }],
+      arrows: [{ id: 'arrow-01' }],
+      elevators: [{ id: 'tower-west', y: 11.8, state: 'idle_top' }],
+      graves: [{ id: 'grave-01' }],
+      soccer: { ball: { position: { x: 0, y: 0.42, z: 0 } } },
+      bounds: 45,
+    },
+  };
+
+  const nextSnapshot = {
+    serverTime: '2026-01-01T00:00:00.000Z',
+    tick: 99,
+    world: {
+      trees: [{ id: 'tree-01', applesRemaining: 1 }],
+      droppedApples: [{ id: 'apple-02' }],
+      swords: [],
+      bows: [{ id: 'bow-01', arrowsRemaining: 1 }],
+      arrows: [{ id: 'arrow-02' }],
+      elevators: [{ id: 'tower-west', y: 0, state: 'idle_bottom' }],
+      graves: [{ id: 'grave-02' }],
+      soccer: { ball: { position: { x: 4, y: 0.42, z: -10 } } },
+      bounds: 50,
+    },
+  };
+
+  const delta = buildSnapshotDelta(previousSnapshot, nextSnapshot);
+
+  assert.equal(delta.tick, 99);
+  assert.deepEqual(delta.world?.trees, nextSnapshot.world.trees);
+  assert.deepEqual(delta.world?.droppedApples, nextSnapshot.world.droppedApples);
+  assert.deepEqual(delta.world?.swords, nextSnapshot.world.swords);
+  assert.deepEqual(delta.world?.bows, nextSnapshot.world.bows);
+  assert.deepEqual(delta.world?.arrows, nextSnapshot.world.arrows);
+  assert.deepEqual(delta.world?.elevators, nextSnapshot.world.elevators);
+  assert.deepEqual(delta.world?.graves, nextSnapshot.world.graves);
+  assert.deepEqual(delta.world?.soccer, nextSnapshot.world.soccer);
+  assert.equal(delta.world?.bounds, 50);
+});
+
+test('buildErrorResponse includes catalog metadata and correlation id', () => {
+  const { statusCode, payload, appError } = buildErrorResponse(
+    createAppError('invalid_session'),
+    { correlationId: 'corr-1234' }
+  );
+
+  assert.equal(statusCode, 401);
+  assert.equal(appError.code, 'invalid_session');
+  assert.equal(payload.error, 'Invalid, expired, or revoked session');
+  assert.equal(payload.code, 'invalid_session');
+  assert.equal(payload.errorId, 'corr-1234');
+  assert.equal(payload.correlationId, 'corr-1234');
+});
+
+test('buildErrorResponse uses fallback code for non-app errors', () => {
+  const { statusCode, payload } = buildErrorResponse(
+    new Error('invalid payload'),
+    {
+      fallbackCode: 'validation_failed',
+      correlationId: 'corr-5678',
+    }
+  );
+
+  assert.equal(statusCode, 400);
+  assert.equal(payload.error, 'Validation failed');
+  assert.equal(payload.code, 'validation_failed');
+  assert.equal(payload.correlationId, 'corr-5678');
+});
+
+test('requestContext keeps valid incoming x-correlation-id', () => {
+  const req = {
+    headers: {
+      'x-correlation-id': 'client-corr-0001',
+    },
+  };
+  const responseHeaders = {};
+  const res = {
+    locals: {},
+    setHeader(name, value) {
+      responseHeaders[name.toLowerCase()] = value;
+    },
+  };
+  let nextCalled = false;
+
+  requestContext(req, res, () => {
+    nextCalled = true;
+  });
+
+  assert.equal(nextCalled, true);
+  assert.equal(req.correlationId, 'client-corr-0001');
+  assert.equal(req.requestContext.correlationId, 'client-corr-0001');
+  assert.equal(res.locals.correlationId, 'client-corr-0001');
+  assert.equal(responseHeaders['x-correlation-id'], 'client-corr-0001');
+});
+
+test('requestContext generates UUID for invalid incoming x-correlation-id', () => {
+  const req = {
+    headers: {
+      'x-correlation-id': 'invalid id with spaces',
+    },
+  };
+  const responseHeaders = {};
+  const res = {
+    locals: {},
+    setHeader(name, value) {
+      responseHeaders[name.toLowerCase()] = value;
+    },
+  };
+
+  requestContext(req, res, () => {});
+
+  assert.match(req.correlationId, /^[0-9a-f-]{36}$/i);
+  assert.equal(req.requestContext.correlationId, req.correlationId);
+  assert.equal(res.locals.correlationId, req.correlationId);
+  assert.equal(responseHeaders['x-correlation-id'], req.correlationId);
+  assert.equal(normalizeCorrelationId('invalid id with spaces'), null);
+});
+
+test('openapi spec exists and documents critical routes', () => {
+  const specPath = path.resolve(__dirname, '../../docs/openapi.yaml');
+  const specContent = fs.readFileSync(specPath, 'utf8');
+
+  assert.match(specContent, /^openapi:\s*3\.0\.3/m);
+  assert.match(specContent, /^\s*\/auth\/me:\s*$/m);
+  assert.match(specContent, /^\s*\/api\/v1\/agents:\s*$/m);
+  assert.match(specContent, /^\s*\/api\/v1\/ai-game\/command:\s*$/m);
+  assert.match(specContent, /^\s*\/api\/v1\/system\/ops-dashboard:\s*$/m);
+});
+
+test('frontend exposes dedicated HTTP error pages for key statuses', () => {
+  const errorPagesDir = path.resolve(__dirname, '../../frontend/public/errors');
+  const requiredPages = ['400', '401', '403', '404', '429', '500', '503'];
+
+  requiredPages.forEach((statusCode) => {
+    const filePath = path.join(errorPagesDir, `${statusCode}.html`);
+    assert.equal(fs.existsSync(filePath), true, `Missing error page: ${statusCode}.html`);
+
+    const html = fs.readFileSync(filePath, 'utf8');
+    assert.match(html, new RegExp(`<title>Erro\\s+${statusCode}\\s+-\\s+GardenQuest<\\/title>`));
+    assert.match(html, new RegExp(`<p class=\"code\">${statusCode}<\\/p>`));
+  });
+});
+
+test('public service classes include task-18 jsdoc headers', () => {
+  const targets = [
+    {
+      filePath: path.resolve(__dirname, '../services/agents/AgentDecisionService.js'),
+      marker: 'Coordinates decision execution for both official NPC and player-owned agents.',
+    },
+    {
+      filePath: path.resolve(__dirname, '../services/agents/AgentGovernanceService.js'),
+      marker: 'Enforces runtime governance constraints (rate limits, budget and circuit breakers) for agents.',
+    },
+    {
+      filePath: path.resolve(__dirname, '../services/world/WorldEventStreamService.js'),
+      marker: 'Manages SSE subscriptions for realtime world updates and event batches.',
+    },
+    {
+      filePath: path.resolve(__dirname, '../services/world/WorldRuntimeWorker.js'),
+      marker: 'Background worker responsible for processing world command queue and flushing snapshots.',
+    },
+  ];
+
+  for (const target of targets) {
+    const content = fs.readFileSync(target.filePath, 'utf8');
+    assert.match(content, /\/\*\*/);
+    assert.ok(content.includes(target.marker));
+  }
+});
+
+test('world event stream service rejects new subscription when total capacity is reached', async () => {
+  const service = new WorldEventStreamService({
+    realmId: 'realm-01',
+    maxSubscribers: 1,
+    maxPublicSubscribers: 1,
+    maxPlayerSubscribers: 1,
+    worldRuntimeRepository: {
+      async getLatestWorldRuntimeSnapshot() {
+        return null;
+      },
+      async listWorldRuntimeEvents() {
+        return [];
+      },
+    },
+    worldGateway: {
+      hydrateSnapshotState() {
+        return {};
+      },
+      async touchPlayerSession() {},
+    },
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  service.subscribers.set('existing-1', { id: 'existing-1', kind: 'public' });
+
+  const req = new EventEmitter();
+  req.headers = {};
+  const res = {};
+
+  await assert.rejects(
+    service.subscribePublic(req, res),
+    (error) => error?.code === 'sse_capacity_exceeded'
+      && error?.statusCode === 429
+      && error?.details?.scope === 'total'
+  );
+});
+
+test('ai-game public stream route maps SSE capacity errors to HTTP 429', async () => {
+  const app = express();
+  app.use('/api/v1/ai-game', createAiGameRoutes({
+    worldEventStreamService: {
+      async subscribePublic() {
+        const error = new Error('Realtime stream capacity reached.');
+        error.code = 'sse_capacity_exceeded';
+        error.statusCode = 429;
+        error.details = { scope: 'total', maxSubscribers: 1, totalSubscribers: 1 };
+        throw error;
+      },
+      async subscribePlayer() {},
+    },
+  }));
+
+  const response = await supertest(app)
+    .get('/api/v1/ai-game/public-stream')
+    .expect(429);
+
+  assert.equal(response.body.code, 'sse_capacity_exceeded');
+  assert.equal(response.body.details.scope, 'total');
+});
+
+test('world event stream service stop is awaitable and cleans notification bus', async () => {
+  let stopCalls = 0;
+  let unsubscribeCalls = 0;
+  const service = new WorldEventStreamService({
+    realmId: 'realm-01',
+    worldRuntimeRepository: {
+      async getLatestWorldRuntimeSnapshot() {
+        return null;
+      },
+      async listWorldRuntimeEvents() {
+        return [];
+      },
+    },
+    worldGateway: {
+      hydrateSnapshotState() {
+        return {};
+      },
+      async touchPlayerSession() {},
+    },
+    notificationBus: {
+      subscribe() {
+        return () => {
+          unsubscribeCalls += 1;
+        };
+      },
+      async start() {},
+      async stop() {
+        stopCalls += 1;
+      },
+      getStats() {
+        return {};
+      },
+    },
+    pollMs: 1000,
+    heartbeatMs: 1000,
+    fallbackPollMs: 1000,
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  service.start();
+  await service.stop();
+
+  assert.equal(unsubscribeCalls, 1);
+  assert.equal(stopCalls, 1);
+  assert.equal(service.pollHandle, null);
+  assert.equal(service.heartbeatHandle, null);
+});
+
+test('world runtime worker start is idempotent across repeated calls', async () => {
+  let engineStartCalls = 0;
+  const worker = new WorldRuntimeWorker({
+    aiGameEngine: {
+      start() {
+        engineStartCalls += 1;
+      },
+      async stop() {},
+      async exportRuntimeSnapshot() {
+        return {
+          tick: 1,
+          publicState: {},
+          actorSnapshots: [],
+        };
+      },
+      getRuntimeStatus() {
+        return {};
+      },
+    },
+    worldRuntimeRepository: {
+      async claimPendingWorldCommands() {
+        return [];
+      },
+      async getLatestWorldRuntimeSnapshot() {
+        return null;
+      },
+      async upsertWorldRuntimeSnapshot() {},
+    },
+    realmId: 'realm-01',
+    commandPollMs: 10_000,
+    snapshotFlushMs: 10_000,
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  await worker.start();
+  await worker.start();
+  await worker.stop();
+
+  assert.equal(engineStartCalls, 1);
+});
+
+test('world runtime gateway health reports ok when db and queue are healthy', async () => {
+  const gateway = new WorldRuntimeGateway({
+    realmId: 'realm-01',
+    snapshotTtlMs: 60_000,
+    worldRuntimeRepository: {
+      async getLatestWorldRuntimeSnapshot() {
+        return {
+          snapshotVersion: 42,
+          updatedAt: new Date().toISOString(),
+          snapshotJson: {},
+        };
+      },
+      async getLatestWorldRuntimeEventSeq() {
+        return 120;
+      },
+      async getWorldCommandQueueOverview() {
+        return {
+          pendingCount: 0,
+          processingCount: 0,
+          errorCount: 0,
+          deadLetterCount: 0,
+          doneCount: 10,
+          maxPriority: 100,
+          maxAttemptsSeen: 1,
+        };
+      },
+    },
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  const health = await gateway.getRuntimeHealth();
+  assert.equal(health.status, 'ok');
+  assert.equal(health.database.ok, true);
+  assert.equal(health.snapshot.stale, false);
+  assert.equal(health.queue.status, 'ok');
+  assert.equal(health.latestEventSeq, 120);
+});
+
+test('world runtime gateway health reports degraded when db query fails', async () => {
+  const gateway = new WorldRuntimeGateway({
+    realmId: 'realm-01',
+    worldRuntimeRepository: {
+      async getLatestWorldRuntimeSnapshot() {
+        throw new Error('db_unavailable');
+      },
+      async getLatestWorldRuntimeEventSeq() {
+        return 0;
+      },
+      async getWorldCommandQueueOverview() {
+        return null;
+      },
+    },
+    logger: { error() {}, warn() {}, info() {} },
+  });
+
+  const health = await gateway.getRuntimeHealth();
+  assert.equal(health.status, 'degraded');
+  assert.equal(health.database.ok, false);
+  assert.equal(health.queue.status, 'down');
 });

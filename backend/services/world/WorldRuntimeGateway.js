@@ -57,6 +57,31 @@ function buildRuntimeMeta(snapshotRow, { snapshotMode = 'database', realmId = co
   };
 }
 
+function buildQueueHealth(queueOverview = null) {
+  if (!queueOverview || typeof queueOverview !== 'object') {
+    return {
+      status: 'unknown',
+      overview: null,
+    };
+  }
+
+  const normalizedOverview = {
+    pendingCount: Math.max(0, Math.trunc(queueOverview.pendingCount) || 0),
+    processingCount: Math.max(0, Math.trunc(queueOverview.processingCount) || 0),
+    errorCount: Math.max(0, Math.trunc(queueOverview.errorCount) || 0),
+    deadLetterCount: Math.max(0, Math.trunc(queueOverview.deadLetterCount) || 0),
+    doneCount: Math.max(0, Math.trunc(queueOverview.doneCount) || 0),
+    maxPriority: Math.max(0, Math.trunc(queueOverview.maxPriority) || 0),
+    maxAttemptsSeen: Math.max(0, Math.trunc(queueOverview.maxAttemptsSeen) || 0),
+  };
+
+  const isDegraded = normalizedOverview.errorCount > 0 || normalizedOverview.deadLetterCount > 0;
+  return {
+    status: isDegraded ? 'degraded' : 'ok',
+    overview: normalizedOverview,
+  };
+}
+
 class WorldRuntimeGateway {
   constructor({ worldRuntimeRepository, realmId = config.REALM_ID, snapshotTtlMs = 15000, logger = console } = {}) {
     this.worldRuntimeRepository = worldRuntimeRepository;
@@ -150,6 +175,66 @@ class WorldRuntimeGateway {
       user,
       snapshotMode: 'database',
     });
+  }
+
+  /**
+   * Consolidates runtime health signals from snapshot/event/queue storage.
+   * @returns {Promise<{
+   *   status: 'ok' | 'degraded',
+   *   database: { ok: boolean, status: string, latencyMs: number, error: string | null },
+   *   snapshot: { stale: boolean, status: string, snapshotVersion: number, snapshotUpdatedAt: string | null },
+   *   queue: { status: string, overview: object | null },
+   *   latestEventSeq: number,
+   *   realmId: string
+   * }>}
+   */
+  async getRuntimeHealth() {
+    const startedAtMs = Date.now();
+    let snapshotRow = null;
+    let latestEventSeq = 0;
+    let queueOverview = null;
+    let dbError = null;
+
+    try {
+      [snapshotRow, latestEventSeq, queueOverview] = await Promise.all([
+        this.worldRuntimeRepository.getLatestWorldRuntimeSnapshot(this.realmId),
+        this.worldRuntimeRepository.getLatestWorldRuntimeEventSeq(this.realmId),
+        this.worldRuntimeRepository.getWorldCommandQueueOverview(this.realmId),
+      ]);
+    } catch (error) {
+      dbError = error;
+      this.logger.error('Runtime health check failed:', error.message);
+    }
+
+    const elapsedMs = Date.now() - startedAtMs;
+    const snapshotUpdatedAtMs = snapshotRow?.updatedAt ? new Date(snapshotRow.updatedAt).getTime() : 0;
+    const snapshotStale = !snapshotUpdatedAtMs || (Date.now() - snapshotUpdatedAtMs) > this.snapshotTtlMs;
+    const queueHealth = dbError
+      ? { status: 'down', overview: null }
+      : buildQueueHealth(queueOverview);
+
+    const status = dbError || snapshotStale || queueHealth.status === 'degraded'
+      ? 'degraded'
+      : 'ok';
+
+    return {
+      status,
+      database: {
+        ok: !dbError,
+        status: dbError ? 'down' : 'ok',
+        latencyMs: Math.max(0, elapsedMs),
+        error: dbError?.message || null,
+      },
+      snapshot: {
+        stale: snapshotStale,
+        status: snapshotStale ? 'stale' : 'ok',
+        snapshotVersion: Number(snapshotRow?.snapshotVersion) || 0,
+        snapshotUpdatedAt: snapshotRow?.updatedAt ? new Date(snapshotRow.updatedAt).toISOString() : null,
+      },
+      queue: queueHealth,
+      latestEventSeq: Number(latestEventSeq) || 0,
+      realmId: this.realmId,
+    };
   }
 }
 

@@ -368,6 +368,8 @@ const config = {
   OPENAI_API_KEY: readEnv('OPENAI_API_KEY'),
   OPENAI_MODEL: readEnv('OPENAI_MODEL', { defaultValue: 'gpt-5.4-nano' }),
   OPENAI_API_TIMEOUT_MS: readIntegerEnv('OPENAI_API_TIMEOUT_MS', 10000),
+  OPENAI_NPC_SYSTEM_PROMPT_VERSION: readEnv('OPENAI_NPC_SYSTEM_PROMPT_VERSION', { defaultValue: 'v1' }),
+  OPENAI_NPC_SYSTEM_PROMPT_FILE: readEnv('OPENAI_NPC_SYSTEM_PROMPT_FILE'),
   OPENAI_PROJECT_ID: readEnv('OPENAI_PROJECT_ID'),
   OPENAI_ORGANIZATION_ID: readEnv('OPENAI_ORGANIZATION_ID'),
 
@@ -407,6 +409,9 @@ const config = {
   WORLD_EVENT_STREAM_HEARTBEAT_MS: readIntegerEnv('WORLD_EVENT_STREAM_HEARTBEAT_MS', 15000),
   WORLD_EVENT_STREAM_TOUCH_MS: readIntegerEnv('WORLD_EVENT_STREAM_TOUCH_MS', 10000),
   WORLD_EVENT_STREAM_SNAPSHOT_EVERY: readIntegerEnv('WORLD_EVENT_STREAM_SNAPSHOT_EVERY', 1),
+  WORLD_EVENT_STREAM_MAX_SUBSCRIBERS: readIntegerEnv('WORLD_EVENT_STREAM_MAX_SUBSCRIBERS', 300),
+  WORLD_EVENT_STREAM_MAX_PUBLIC_SUBSCRIBERS: readIntegerEnv('WORLD_EVENT_STREAM_MAX_PUBLIC_SUBSCRIBERS', 220),
+  WORLD_EVENT_STREAM_MAX_PLAYER_SUBSCRIBERS: readIntegerEnv('WORLD_EVENT_STREAM_MAX_PLAYER_SUBSCRIBERS', 220),
   WORLD_EVENT_STREAM_FALLBACK_POLL_MS: readIntegerEnv('WORLD_EVENT_STREAM_FALLBACK_POLL_MS', 5000),
 
   // V9 — Postgres Notify Bus
@@ -431,6 +436,7 @@ const config = {
   AGENT_ENDPOINT_QUARANTINE_MS: readIntegerEnv('AGENT_ENDPOINT_QUARANTINE_MS', 900000),
   WORLD_COMMAND_MAX_ATTEMPTS: readIntegerEnv('WORLD_COMMAND_MAX_ATTEMPTS', 5),
   WORLD_COMMAND_RETRY_BASE_MS: readIntegerEnv('WORLD_COMMAND_RETRY_BASE_MS', 1200),
+  CSP_ALLOW_LOCAL_CONNECT_SRC: readBooleanEnv('CSP_ALLOW_LOCAL_CONNECT_SRC', appEnv === 'local'),
 
   NODE_ENV: nodeEnv,
 };
@@ -445,6 +451,10 @@ function validateRuntimeConfig(currentConfig) {
 
   if (currentConfig.APP_ENV !== 'local' && currentConfig.NODE_ENV !== 'production') {
     throw new Error('APP_ENV=staging/production requires NODE_ENV=production');
+  }
+
+  if (currentConfig.APP_ENV !== 'local' && currentConfig.CSP_ALLOW_LOCAL_CONNECT_SRC) {
+    throw new Error('CSP_ALLOW_LOCAL_CONNECT_SRC must be false outside APP_ENV=local');
   }
 
   if (currentConfig.COOKIE_SAME_SITE === 'None' && !currentConfig.COOKIE_SECURE) {

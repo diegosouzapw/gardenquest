@@ -49,6 +49,9 @@ function parseLastEventSeq(value) {
   return match ? (Number.parseInt(match[1], 10) || 0) : 0;
 }
 
+/**
+ * Manages SSE subscriptions for realtime world updates and event batches.
+ */
 class WorldEventStreamService {
   constructor({
     worldRuntimeRepository,
@@ -59,6 +62,9 @@ class WorldEventStreamService {
     touchSessionMs = config.WORLD_EVENT_STREAM_TOUCH_MS,
     reconnectMs = 3000,
     snapshotEveryVersions = config.WORLD_EVENT_STREAM_SNAPSHOT_EVERY,
+    maxSubscribers = config.WORLD_EVENT_STREAM_MAX_SUBSCRIBERS,
+    maxPublicSubscribers = config.WORLD_EVENT_STREAM_MAX_PUBLIC_SUBSCRIBERS,
+    maxPlayerSubscribers = config.WORLD_EVENT_STREAM_MAX_PLAYER_SUBSCRIBERS,
     notificationBus = null,
     fallbackPollMs = config.WORLD_EVENT_STREAM_FALLBACK_POLL_MS,
     logger = console,
@@ -71,6 +77,15 @@ class WorldEventStreamService {
     this.touchSessionMs = Math.max(5000, Number(touchSessionMs) || 10000);
     this.reconnectMs = Math.max(1000, Number(reconnectMs) || 3000);
     this.snapshotEveryVersions = Math.max(1, Number(snapshotEveryVersions) || 8);
+    this.maxSubscribers = Math.max(1, Number(maxSubscribers) || 300);
+    this.maxPublicSubscribers = Math.max(
+      1,
+      Math.min(this.maxSubscribers, Number(maxPublicSubscribers) || this.maxSubscribers)
+    );
+    this.maxPlayerSubscribers = Math.max(
+      1,
+      Math.min(this.maxSubscribers, Number(maxPlayerSubscribers) || this.maxSubscribers)
+    );
     this.logger = logger;
     this.notificationBus = notificationBus;
     this.fallbackPollMs = Math.max(1000, Number(fallbackPollMs) || 5000);
@@ -88,6 +103,11 @@ class WorldEventStreamService {
     this.handleRuntimeNotification = this.handleRuntimeNotification.bind(this);
   }
 
+  /**
+   * Starts polling, heartbeat loops and optional notification bus subscription.
+   * Idempotent when already started or when stream feature is disabled.
+   * @returns {void}
+   */
   start() {
     if (!config.WORLD_EVENT_STREAM_ENABLED || this.pollHandle || this.heartbeatHandle) {
       return;
@@ -116,7 +136,11 @@ class WorldEventStreamService {
     this.heartbeatHandle.unref?.();
   }
 
-  stop() {
+  /**
+   * Stops loops/bus and closes all active SSE subscribers.
+   * @returns {Promise<void>}
+   */
+  async stop() {
     if (this.pollHandle) {
       clearInterval(this.pollHandle);
       this.pollHandle = null;
@@ -133,7 +157,7 @@ class WorldEventStreamService {
     }
 
     if (this.notificationBus) {
-      this.notificationBus.stop().catch(() => {});
+      await this.notificationBus.stop().catch(() => {});
     }
 
     for (const subscriber of this.subscribers.values()) {
@@ -147,6 +171,23 @@ class WorldEventStreamService {
     this.subscribers.clear();
   }
 
+  /**
+   * Returns runtime stats for health and observability endpoints.
+   * @returns {{
+   *   enabled: boolean,
+   *   totalSubscribers: number,
+   *   publicSubscribers: number,
+   *   playerSubscribers: number,
+   *   lastBroadcastCursor: string | null,
+   *   lastBroadcastEventSeq: number,
+   *   snapshotEveryVersions: number,
+   *   realmId: string,
+   *   busEnabled: boolean,
+   *   busNotifications: number,
+   *   busWakeups: number,
+   *   bus: object | null
+   * }}
+   */
   getStats() {
     let publicSubscribers = 0;
     let playerSubscribers = 0;
@@ -167,6 +208,9 @@ class WorldEventStreamService {
       lastBroadcastCursor: this.lastBroadcastCursor || null,
       lastBroadcastEventSeq: this.lastBroadcastEventSeq || 0,
       snapshotEveryVersions: this.snapshotEveryVersions,
+      maxSubscribers: this.maxSubscribers,
+      maxPublicSubscribers: this.maxPublicSubscribers,
+      maxPlayerSubscribers: this.maxPlayerSubscribers,
       realmId: this.realmId,
       busEnabled: Boolean(this.notificationBus),
       busNotifications: this.busNotifications,
@@ -175,10 +219,23 @@ class WorldEventStreamService {
     };
   }
 
+  /**
+   * Registers a public/spectator SSE stream.
+   * @param {import('express').Request} req
+   * @param {import('express').Response} res
+   * @returns {Promise<string|null>}
+   */
   async subscribePublic(req, res) {
     return this.subscribe(req, res, { kind: 'public', user: null });
   }
 
+  /**
+   * Registers a player SSE stream tied to an authenticated user.
+   * @param {import('express').Request} req
+   * @param {import('express').Response} res
+   * @param {{ id?: string } | null} user
+   * @returns {Promise<string|null>}
+   */
   async subscribePlayer(req, res, user) {
     return this.subscribe(req, res, { kind: 'player', user });
   }
@@ -189,6 +246,7 @@ class WorldEventStreamService {
       return null;
     }
 
+    this.assertCapacity(kind);
     this.start();
 
     res.status(200);
@@ -238,6 +296,60 @@ class WorldEventStreamService {
     }
 
     return id;
+  }
+
+  countSubscribersByKind(kind) {
+    let count = 0;
+    for (const subscriber of this.subscribers.values()) {
+      if (subscriber.kind === kind) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  assertCapacity(kind) {
+    const totalSubscribers = this.subscribers.size;
+    if (totalSubscribers >= this.maxSubscribers) {
+      const error = new Error('Realtime stream capacity reached.');
+      error.code = 'sse_capacity_exceeded';
+      error.statusCode = 429;
+      error.details = {
+        scope: 'total',
+        totalSubscribers,
+        maxSubscribers: this.maxSubscribers,
+      };
+      throw error;
+    }
+
+    if (kind === 'public') {
+      const publicSubscribers = this.countSubscribersByKind('public');
+      if (publicSubscribers >= this.maxPublicSubscribers) {
+        const error = new Error('Realtime public stream capacity reached.');
+        error.code = 'sse_capacity_exceeded';
+        error.statusCode = 429;
+        error.details = {
+          scope: 'public',
+          publicSubscribers,
+          maxPublicSubscribers: this.maxPublicSubscribers,
+        };
+        throw error;
+      }
+      return;
+    }
+
+    const playerSubscribers = this.countSubscribersByKind('player');
+    if (playerSubscribers >= this.maxPlayerSubscribers) {
+      const error = new Error('Realtime player stream capacity reached.');
+      error.code = 'sse_capacity_exceeded';
+      error.statusCode = 429;
+      error.details = {
+        scope: 'player',
+        playerSubscribers,
+        maxPlayerSubscribers: this.maxPlayerSubscribers,
+      };
+      throw error;
+    }
   }
 
   buildCursor(snapshotRow) {
@@ -341,6 +453,11 @@ class WorldEventStreamService {
     return latestSeq;
   }
 
+  /**
+   * Handles runtime bus notifications and triggers an immediate poll when applicable.
+   * @param {{ realmId?: string }} [payload={}]
+   * @returns {Promise<void>}
+   */
   async handleRuntimeNotification(payload = {}) {
     if (this.subscribers.size < 1) {
       return;

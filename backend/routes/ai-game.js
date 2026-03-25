@@ -2,36 +2,30 @@ const express = require('express');
 const { requireAuth } = require('../middleware/authenticate');
 const config = require('../config');
 const { insertLog } = require('../database/postgres');
+const { getRequestIp, getRequestUserAgent } = require('../shared/request');
 const { formatSuspicionDetails, validatePlayerCommandBody } = require('../games/garden-quest/command-security');
-
-function getRequestIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const rawIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || req.socket.remoteAddress || '';
-  return rawIp.split(',')[0].trim();
-}
-
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
-}
 
 function parseSinceSeq(value) {
   const parsed = Number.parseInt(String(value || '').trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
+function handleSseSubscriptionError(error, res, next) {
+  if (error?.code === 'sse_capacity_exceeded') {
+    return res.status(429).json({
+      error: 'Realtime stream capacity reached. Try again in a few seconds.',
+      code: error.code,
+      details: error.details || null,
+    });
+  }
+
+  return next(error);
+}
+
 async function logSuspiciousCommand(req, user, issues) {
   const details = formatSuspicionDetails(issues);
   const ip = getRequestIp(req);
-  const userAgent = normalizeText(req.headers['user-agent'], 512) || '';
+  const userAgent = getRequestUserAgent(req);
 
   console.warn(`Suspicious player command blocked for user ${user?.id || 'unknown'}: ${details}`);
 
@@ -109,7 +103,7 @@ function createAiGameRoutes({
       await worldEventStreamService.subscribePublic(req, res);
       return undefined;
     } catch (error) {
-      return next(error);
+      return handleSseSubscriptionError(error, res, next);
     }
   });
 
@@ -124,7 +118,7 @@ function createAiGameRoutes({
       await worldEventStreamService.subscribePlayer(req, res, req.authUser);
       return undefined;
     } catch (error) {
-      return next(error);
+      return handleSseSubscriptionError(error, res, next);
     }
   });
 
