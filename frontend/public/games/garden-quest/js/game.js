@@ -1532,6 +1532,143 @@
         return Number.isFinite(serverTimeMs) ? serverTimeMs : 0;
     }
 
+    function hasOwn(objectValue, key) {
+        return Boolean(objectValue) && Object.prototype.hasOwnProperty.call(objectValue, key);
+    }
+
+    function mergePlayersDelta(previousPlayers, playersDelta) {
+        const nextPlayersById = new Map();
+        const basePlayers = Array.isArray(previousPlayers) ? previousPlayers : [];
+
+        basePlayers.forEach((playerState) => {
+            if (!playerState?.id) {
+                return;
+            }
+
+            nextPlayersById.set(String(playerState.id), playerState);
+        });
+
+        const upsertPlayers = Array.isArray(playersDelta?.upsert) ? playersDelta.upsert : [];
+        upsertPlayers.forEach((playerState) => {
+            if (!playerState?.id) {
+                return;
+            }
+
+            nextPlayersById.set(String(playerState.id), playerState);
+        });
+
+        const removeIds = Array.isArray(playersDelta?.removeIds) ? playersDelta.removeIds : [];
+        removeIds.forEach((playerId) => {
+            nextPlayersById.delete(String(playerId));
+        });
+
+        return Array.from(nextPlayersById.values()).sort((left, right) => (
+            String(left?.name || '').localeCompare(String(right?.name || ''), 'pt-BR')
+        ));
+    }
+
+    function getChatEntryKey(entry) {
+        const id = Number(entry?.id);
+        if (Number.isFinite(id) && id > 0) {
+            return `id:${id}`;
+        }
+
+        const createdAt = entry?.createdAt || '';
+        const playerName = entry?.playerName || '';
+        const message = entry?.message || '';
+        return `fallback:${createdAt}:${playerName}:${message}`;
+    }
+
+    function mergePlayerChatDelta(previousChatState, playerChatDelta) {
+        const previousEntries = Array.isArray(previousChatState?.entries) ? previousChatState.entries : [];
+        const incomingEntries = Array.isArray(playerChatDelta?.entries) ? playerChatDelta.entries : [];
+
+        if (playerChatDelta?.reset) {
+            return { entries: incomingEntries };
+        }
+
+        if (incomingEntries.length < 1) {
+            return { entries: previousEntries };
+        }
+
+        const mergedEntries = [...previousEntries];
+        const mergedKeys = new Set(mergedEntries.map(getChatEntryKey));
+
+        incomingEntries.forEach((entry) => {
+            const entryKey = getChatEntryKey(entry);
+            if (mergedKeys.has(entryKey)) {
+                return;
+            }
+
+            mergedEntries.push(entry);
+            mergedKeys.add(entryKey);
+        });
+
+        return { entries: mergedEntries };
+    }
+
+    function mergeWorldDelta(previousWorld, worldDelta) {
+        const baseWorld = previousWorld && typeof previousWorld === 'object' ? previousWorld : {};
+        const patchWorld = worldDelta && typeof worldDelta === 'object' ? worldDelta : {};
+
+        return {
+            ...baseWorld,
+            ...patchWorld,
+        };
+    }
+
+    function mergeSnapshotDelta(previousSnapshot, deltaPayload) {
+        const baseSnapshot = previousSnapshot && typeof previousSnapshot === 'object' ? previousSnapshot : {};
+        const patch = deltaPayload && typeof deltaPayload === 'object' ? deltaPayload : {};
+        const mergedSnapshot = {
+            ...baseSnapshot,
+            serverTime: patch.serverTime || baseSnapshot.serverTime || new Date().toISOString(),
+            tick: hasOwn(patch, 'tick') ? (Number(patch.tick) || 0) : (Number(baseSnapshot.tick) || 0),
+        };
+
+        if (hasOwn(patch, 'worldVersion')) {
+            mergedSnapshot.worldVersion = Number(patch.worldVersion) || 0;
+        }
+
+        if (hasOwn(patch, 'self')) {
+            mergedSnapshot.self = patch.self;
+        }
+
+        if (hasOwn(patch, 'runtime')) {
+            mergedSnapshot.runtime = patch.runtime;
+        }
+
+        if (hasOwn(patch, 'settings')) {
+            mergedSnapshot.settings = patch.settings;
+        }
+
+        if (hasOwn(patch, 'players')) {
+            mergedSnapshot.players = mergePlayersDelta(baseSnapshot.players, patch.players);
+        }
+
+        if (hasOwn(patch, 'ai')) {
+            mergedSnapshot.ai = patch.ai;
+        }
+
+        if (hasOwn(patch, 'world')) {
+            mergedSnapshot.world = mergeWorldDelta(baseSnapshot.world, patch.world);
+        }
+
+        if (hasOwn(patch, 'leaderboard')) {
+            mergedSnapshot.leaderboard = patch.leaderboard;
+        }
+
+        if (hasOwn(patch, 'soccerLeaderboard')) {
+            mergedSnapshot.soccerLeaderboard = patch.soccerLeaderboard;
+        }
+
+        if (hasOwn(patch, 'playerChat')) {
+            mergedSnapshot.playerChat = mergePlayerChatDelta(baseSnapshot.playerChat, patch.playerChat);
+        }
+
+        return mergedSnapshot;
+    }
+
     function updateServerTimeEstimate(serverTimeIso) {
         const serverTimeMs = parseServerTimeMs(serverTimeIso);
         if (serverTimeMs <= 0) {
@@ -1735,6 +1872,7 @@
             : 0,
         lastSnapshotTick: -1,
         worldVersion: Number(bootstrapState?.worldVersion || initialWorldState?.version) || 0,
+        snapshotCache: null,
     };
 
     const keys = {};
@@ -1938,10 +2076,20 @@
                 }
             });
 
-            source.addEventListener('delta', () => {
-                // Current client authority logic expects full snapshots.
-                // Request a one-shot full state refresh when delta updates are enabled.
-                fetchGameState().catch(() => {});
+            source.addEventListener('delta', (event) => {
+                try {
+                    const deltaPayload = JSON.parse(event.data || '{}');
+                    if (!stateSync.snapshotCache) {
+                        fetchGameState().catch(() => {});
+                        return;
+                    }
+
+                    const mergedSnapshot = mergeSnapshotDelta(stateSync.snapshotCache, deltaPayload);
+                    applySnapshot(mergedSnapshot);
+                } catch (error) {
+                    console.error('Failed to parse delta SSE payload:', error);
+                    fetchGameState().catch(() => {});
+                }
             });
 
             source.addEventListener('world_event_batch', () => {});
@@ -2948,31 +3096,17 @@
             updateActorHitFeedback(aiUi, snapshot.ai);
         }
 
-        if (snapshot.world && Array.isArray(snapshot.world.trees)) {
-            world.syncTreeState(snapshot.world.trees);
-        }
-
-        if (snapshot.world) {
-            world.syncDroppedApples(snapshot.world.droppedApples);
-            world.syncSwordPickups(snapshot.world.swords);
-            world.syncBowPickups(snapshot.world.bows);
-            world.syncArrowProjectiles(snapshot.world.arrows);
-            world.syncElevators(snapshot.world.elevators);
-        }
-
-        if (snapshot.world && Array.isArray(snapshot.world.graves)) {
-            world.syncGraves(snapshot.world.graves);
+        if (snapshot.world && typeof snapshot.world === 'object') {
+            world.applyWorldPatch(snapshot.world);
         }
 
         if (snapshot.world && snapshot.world.soccer) {
             soccerBallCarrierId = String(snapshot.world.soccer.ball?.possessedByActorId || '').trim();
-            world.syncSoccerState(snapshot.world.soccer);
             handleSoccerGoalEvent(snapshot.world.soccer.lastGoalEvent);
         }
 
         if (snapshot.world && Number.isFinite(snapshot.world.bounds)) {
             stateSync.worldBounds = snapshot.world.bounds;
-            world.setWorldBounds(snapshot.world.bounds);
         }
 
         if (snapshot.leaderboard) {
@@ -3033,6 +3167,7 @@
             }
         });
 
+        stateSync.snapshotCache = snapshot;
         stateSync.remotePresenceInitialized = true;
     }
 

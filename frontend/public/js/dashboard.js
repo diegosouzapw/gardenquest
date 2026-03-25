@@ -1,6 +1,10 @@
 let refreshInterval = null;
 let currentUser = null;
 let isRefreshing = false;
+let opsModalOpen = false;
+let opsModalResolver = null;
+let opsModalPreviouslyFocusedElement = null;
+let opsToastTimeout = null;
 
 const TABLE_COLUMNS = {
     siteLogsTableBody: 6,
@@ -11,6 +15,7 @@ const TABLE_COLUMNS = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    setupOpsModal();
     document.getElementById('dashboardLoginBtn').addEventListener('click', loginDashboard);
     document.getElementById('dashboardLogoutBtn').addEventListener('click', logoutDashboard);
     initializeDashboard();
@@ -136,6 +141,12 @@ function showLoginOverlay() {
     document.getElementById('dashboardContainer').style.display = 'none';
     document.getElementById('authOverlay').style.display = 'flex';
     hideAuthError();
+    window.requestAnimationFrame(() => {
+        const loginButton = document.getElementById('dashboardLoginBtn');
+        if (loginButton && !loginButton.hidden) {
+            loginButton.focus();
+        }
+    });
 }
 
 function showForbiddenOverlay(email) {
@@ -149,6 +160,12 @@ function showForbiddenOverlay(email) {
     document.getElementById('dashboardContainer').style.display = 'none';
     document.getElementById('authOverlay').style.display = 'flex';
     showAuthError('Use a conta Google autorizada para entrar.');
+    window.requestAnimationFrame(() => {
+        const switchAccountButton = document.getElementById('dashboardLogoutBtn');
+        if (switchAccountButton && !switchAccountButton.hidden) {
+            switchAccountButton.focus();
+        }
+    });
 }
 
 async function logoutDashboard() {
@@ -180,6 +197,172 @@ async function safeReadJson(response) {
     } catch (error) {
         return null;
     }
+}
+
+function setupOpsModal() {
+    const modalBackdrop = document.getElementById('opsModalBackdrop');
+    const cancelButton = document.getElementById('opsModalCancelBtn');
+    const confirmButton = document.getElementById('opsModalConfirmBtn');
+
+    if (!modalBackdrop || !cancelButton || !confirmButton) {
+        return;
+    }
+
+    cancelButton.addEventListener('click', () => {
+        resolveOpsModal(false);
+    });
+
+    confirmButton.addEventListener('click', () => {
+        resolveOpsModal(true);
+    });
+
+    modalBackdrop.addEventListener('click', (event) => {
+        if (event.target === modalBackdrop) {
+            resolveOpsModal(false);
+        }
+    });
+
+    document.addEventListener('keydown', handleOpsModalKeydown);
+}
+
+function handleOpsModalKeydown(event) {
+    if (!opsModalOpen) {
+        return;
+    }
+
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        resolveOpsModal(false);
+        return;
+    }
+
+    if (event.key !== 'Tab') {
+        return;
+    }
+
+    const dialog = document.getElementById('opsModalDialog');
+    if (!dialog) {
+        return;
+    }
+
+    const focusableNodes = Array.from(
+        dialog.querySelectorAll(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+    ).filter((node) => !node.hasAttribute('hidden'));
+
+    if (focusableNodes.length < 1) {
+        event.preventDefault();
+        return;
+    }
+
+    const firstNode = focusableNodes[0];
+    const lastNode = focusableNodes[focusableNodes.length - 1];
+
+    if (event.shiftKey && document.activeElement === firstNode) {
+        event.preventDefault();
+        lastNode.focus();
+        return;
+    }
+
+    if (!event.shiftKey && document.activeElement === lastNode) {
+        event.preventDefault();
+        firstNode.focus();
+    }
+}
+
+function resolveOpsModal(confirmed) {
+    if (!opsModalOpen) {
+        return;
+    }
+
+    const modalBackdrop = document.getElementById('opsModalBackdrop');
+    if (modalBackdrop) {
+        modalBackdrop.hidden = true;
+    }
+
+    document.body.classList.remove('ops-modal-open');
+    opsModalOpen = false;
+
+    const resolver = opsModalResolver;
+    opsModalResolver = null;
+
+    if (opsModalPreviouslyFocusedElement && typeof opsModalPreviouslyFocusedElement.focus === 'function') {
+        opsModalPreviouslyFocusedElement.focus();
+    }
+    opsModalPreviouslyFocusedElement = null;
+
+    if (typeof resolver === 'function') {
+        resolver(Boolean(confirmed));
+    }
+}
+
+function confirmAdminAction({
+    title = 'Confirmar acao',
+    description = 'Tem certeza que deseja continuar?',
+    confirmLabel = 'Confirmar',
+    cancelLabel = 'Cancelar',
+    confirmTone = 'warn',
+} = {}) {
+    const modalBackdrop = document.getElementById('opsModalBackdrop');
+    const modalTitle = document.getElementById('opsModalTitle');
+    const modalDescription = document.getElementById('opsModalDescription');
+    const cancelButton = document.getElementById('opsModalCancelBtn');
+    const confirmButton = document.getElementById('opsModalConfirmBtn');
+
+    if (!modalBackdrop || !modalTitle || !modalDescription || !cancelButton || !confirmButton) {
+        console.error('Admin confirmation modal is unavailable.');
+        return Promise.resolve(false);
+    }
+
+    modalTitle.textContent = title;
+    modalDescription.textContent = description;
+    cancelButton.textContent = cancelLabel;
+    confirmButton.textContent = confirmLabel;
+    confirmButton.dataset.tone = confirmTone;
+
+    opsModalPreviouslyFocusedElement = document.activeElement;
+    modalBackdrop.hidden = false;
+    document.body.classList.add('ops-modal-open');
+    opsModalOpen = true;
+
+    window.requestAnimationFrame(() => {
+        confirmButton.focus();
+    });
+
+    return new Promise((resolve) => {
+        opsModalResolver = resolve;
+    });
+}
+
+function showOpsToast(message, tone = 'info') {
+    const region = document.getElementById('opsToastRegion');
+    if (!region) {
+        return;
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `ops-toast ${tone}`;
+    toast.textContent = String(message || '');
+    toast.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+
+    region.replaceChildren(toast);
+    window.requestAnimationFrame(() => {
+        toast.classList.add('visible');
+    });
+
+    if (opsToastTimeout) {
+        window.clearTimeout(opsToastTimeout);
+    }
+
+    opsToastTimeout = window.setTimeout(() => {
+        toast.classList.remove('visible');
+        window.setTimeout(() => {
+            if (region.contains(toast)) {
+                region.removeChild(toast);
+            }
+        }, 220);
+    }, 3200);
 }
 
 function updateStats(data, ops) {
@@ -263,11 +446,22 @@ function renderSessionTable(items) {
         tr.appendChild(createCell(item.ip || '-'));
         tr.appendChild(createCell(item.userAgent || '-', { title: item.userAgent || '', styles: { maxWidth: '240px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }));
         tr.appendChild(createActionsCell([
-            makeActionButton('Revogar', 'warn', async () => {
-                const confirmed = window.confirm(`Revogar a sessao ${item.id}?`);
-                if (!confirmed) return;
-                await postAdminAction(`/api/v1/system/sessions/${encodeURIComponent(item.id)}/revoke`, {});
-            }),
+            makeActionButton(
+                'Revogar',
+                'warn',
+                () => postAdminAction(`/api/v1/system/sessions/${encodeURIComponent(item.id)}/revoke`, {}),
+                false,
+                {
+                    confirm: {
+                        title: 'Revogar sessao ativa',
+                        description: `Deseja revogar a sessao ${item.id}? O usuario precisara entrar novamente.`,
+                        confirmLabel: 'Revogar sessao',
+                        cancelLabel: 'Cancelar',
+                        confirmTone: 'danger',
+                    },
+                    successMessage: 'Sessao revogada com sucesso.',
+                }
+            ),
         ]));
         tbody.appendChild(tr);
     });
@@ -291,9 +485,54 @@ function renderAgentHealthTable(items) {
         tr.appendChild(createCell(formatLogTimestamp(item.quarantinedUntil)));
         tr.appendChild(createCell(item.lastReason || item.lastErrorCode || '-', { title: item.lastReason || item.lastErrorCode || '' }));
         tr.appendChild(createActionsCell([
-            makeActionButton('Pause', 'warn', () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/pause`, {}), item.status === 'paused'),
-            makeActionButton('Resume', 'ok', () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/resume`, {}), item.status === 'active'),
-            makeActionButton('Limpar quarentena', 'neutral', () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/clear-quarantine`, {})),
+            makeActionButton(
+                'Pause',
+                'warn',
+                () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/pause`, {}),
+                item.status === 'paused',
+                {
+                    confirm: {
+                        title: 'Pausar agent',
+                        description: `Deseja pausar o agent ${item.name || item.id}?`,
+                        confirmLabel: 'Pausar',
+                        cancelLabel: 'Cancelar',
+                        confirmTone: 'danger',
+                    },
+                    successMessage: 'Agent pausado.',
+                }
+            ),
+            makeActionButton(
+                'Resume',
+                'ok',
+                () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/resume`, {}),
+                item.status === 'active',
+                {
+                    confirm: {
+                        title: 'Retomar agent',
+                        description: `Deseja retomar o agent ${item.name || item.id}?`,
+                        confirmLabel: 'Retomar',
+                        cancelLabel: 'Cancelar',
+                        confirmTone: 'ok',
+                    },
+                    successMessage: 'Agent retomado.',
+                }
+            ),
+            makeActionButton(
+                'Limpar quarentena',
+                'neutral',
+                () => postAdminAction(`/api/v1/system/agents/${encodeURIComponent(item.id)}/clear-quarantine`, {}),
+                false,
+                {
+                    confirm: {
+                        title: 'Limpar quarentena',
+                        description: `Deseja remover o estado de quarentena do agent ${item.name || item.id}?`,
+                        confirmLabel: 'Limpar',
+                        cancelLabel: 'Cancelar',
+                        confirmTone: 'warn',
+                    },
+                    successMessage: 'Quarentena removida.',
+                }
+            ),
         ]));
         tbody.appendChild(tr);
     });
@@ -321,7 +560,22 @@ function renderDeadLetterTable(items) {
             styles: { maxWidth: '220px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
         }));
         tr.appendChild(createActionsCell([
-            makeActionButton('Retry', 'ok', () => postAdminAction(`/api/v1/system/queue/${encodeURIComponent(item.id)}/retry`, { resetAttempts: true })),
+            makeActionButton(
+                'Retry',
+                'ok',
+                () => postAdminAction(`/api/v1/system/queue/${encodeURIComponent(item.id)}/retry`, { resetAttempts: true }),
+                false,
+                {
+                    confirm: {
+                        title: 'Retentar comando em dead letter',
+                        description: `Deseja reenfileirar o comando ${item.id}?`,
+                        confirmLabel: 'Retentar',
+                        cancelLabel: 'Cancelar',
+                        confirmTone: 'warn',
+                    },
+                    successMessage: 'Comando reenfileirado.',
+                }
+            ),
         ]));
         tbody.appendChild(tr);
     });
@@ -375,7 +629,7 @@ function createActionsCell(buttons) {
     return td;
 }
 
-function makeActionButton(label, variant, handler, disabled = false) {
+function makeActionButton(label, variant, handler, disabled = false, options = {}) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = label;
@@ -387,10 +641,21 @@ function makeActionButton(label, variant, handler, disabled = false) {
         const previousLabel = button.textContent;
         button.textContent = '...';
         try {
+            if (options.confirm) {
+                const confirmed = await confirmAdminAction(options.confirm);
+                if (!confirmed) {
+                    return;
+                }
+            }
+
             await handler();
+
+            if (options.successMessage) {
+                showOpsToast(options.successMessage, 'success');
+            }
         } catch (error) {
             console.error('Dashboard action error:', error);
-            window.alert(error?.message || 'Falha ao executar a acao administrativa.');
+            showOpsToast(error?.message || 'Falha ao executar a acao administrativa.', 'error');
         } finally {
             button.textContent = previousLabel;
             button.disabled = Boolean(disabled);

@@ -47,7 +47,7 @@
     </style>
 </head>
 <body>
-    <div class="auth-overlay" id="authOverlay">
+    <div class="auth-overlay" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authCopy">
         <div class="auth-card">
             <h2 id="authTitle">Painel Restrito</h2>
             <p class="auth-copy" id="authCopy">Entre com a conta Google autorizada para acessar o dashboard administrativo.</p>
@@ -102,8 +102,28 @@
         </div>
     </div>
 
+    <div class="ops-modal-backdrop" id="opsModalBackdrop" hidden>
+        <section
+            class="ops-modal"
+            id="opsModalDialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="opsModalTitle"
+            aria-describedby="opsModalDescription"
+        >
+            <h2 class="ops-modal-title" id="opsModalTitle">Confirmar acao</h2>
+            <p class="ops-modal-description" id="opsModalDescription">Tem certeza que deseja continuar?</p>
+            <div class="ops-modal-actions">
+                <button type="button" class="ops-modal-btn cancel" id="opsModalCancelBtn">Cancelar</button>
+                <button type="button" class="ops-modal-btn confirm" id="opsModalConfirmBtn">Confirmar</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="ops-toast-region" id="opsToastRegion" aria-live="polite" aria-atomic="true"></div>
+
     <script src="js/config.js?v=14"></script>
-    <script src="js/auth.js?v=11"></script>
+    <script src="shared/js/auth.js?v=1"></script>
     <script src="js/dashboard.js?v=13"></script>
 </body>
 </html>
