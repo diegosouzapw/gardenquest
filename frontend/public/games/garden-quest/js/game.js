@@ -17,6 +17,8 @@
     let isGameRunning = true;
     let movementSyncInterval = null;
     let statePollTimeout = null;
+    let stateStreamSource = null;
+    let stateStreamConnected = false;
     let heldMovementFlushTimeout = null;
     let loadingScreenTimeout = null;
     let animationId = null;
@@ -126,6 +128,11 @@
         if (animationId) cancelAnimationFrame(animationId);
         if (movementSyncInterval) clearInterval(movementSyncInterval);
         if (statePollTimeout) clearTimeout(statePollTimeout);
+        if (stateStreamSource) {
+            stateStreamSource.close();
+            stateStreamSource = null;
+        }
+        stateStreamConnected = false;
         if (heldMovementFlushTimeout) clearTimeout(heldMovementFlushTimeout);
         if (loadingScreenTimeout) clearTimeout(loadingScreenTimeout);
 
@@ -1525,6 +1532,143 @@
         return Number.isFinite(serverTimeMs) ? serverTimeMs : 0;
     }
 
+    function hasOwn(objectValue, key) {
+        return Boolean(objectValue) && Object.prototype.hasOwnProperty.call(objectValue, key);
+    }
+
+    function mergePlayersDelta(previousPlayers, playersDelta) {
+        const nextPlayersById = new Map();
+        const basePlayers = Array.isArray(previousPlayers) ? previousPlayers : [];
+
+        basePlayers.forEach((playerState) => {
+            if (!playerState?.id) {
+                return;
+            }
+
+            nextPlayersById.set(String(playerState.id), playerState);
+        });
+
+        const upsertPlayers = Array.isArray(playersDelta?.upsert) ? playersDelta.upsert : [];
+        upsertPlayers.forEach((playerState) => {
+            if (!playerState?.id) {
+                return;
+            }
+
+            nextPlayersById.set(String(playerState.id), playerState);
+        });
+
+        const removeIds = Array.isArray(playersDelta?.removeIds) ? playersDelta.removeIds : [];
+        removeIds.forEach((playerId) => {
+            nextPlayersById.delete(String(playerId));
+        });
+
+        return Array.from(nextPlayersById.values()).sort((left, right) => (
+            String(left?.name || '').localeCompare(String(right?.name || ''), 'pt-BR')
+        ));
+    }
+
+    function getChatEntryKey(entry) {
+        const id = Number(entry?.id);
+        if (Number.isFinite(id) && id > 0) {
+            return `id:${id}`;
+        }
+
+        const createdAt = entry?.createdAt || '';
+        const playerName = entry?.playerName || '';
+        const message = entry?.message || '';
+        return `fallback:${createdAt}:${playerName}:${message}`;
+    }
+
+    function mergePlayerChatDelta(previousChatState, playerChatDelta) {
+        const previousEntries = Array.isArray(previousChatState?.entries) ? previousChatState.entries : [];
+        const incomingEntries = Array.isArray(playerChatDelta?.entries) ? playerChatDelta.entries : [];
+
+        if (playerChatDelta?.reset) {
+            return { entries: incomingEntries };
+        }
+
+        if (incomingEntries.length < 1) {
+            return { entries: previousEntries };
+        }
+
+        const mergedEntries = [...previousEntries];
+        const mergedKeys = new Set(mergedEntries.map(getChatEntryKey));
+
+        incomingEntries.forEach((entry) => {
+            const entryKey = getChatEntryKey(entry);
+            if (mergedKeys.has(entryKey)) {
+                return;
+            }
+
+            mergedEntries.push(entry);
+            mergedKeys.add(entryKey);
+        });
+
+        return { entries: mergedEntries };
+    }
+
+    function mergeWorldDelta(previousWorld, worldDelta) {
+        const baseWorld = previousWorld && typeof previousWorld === 'object' ? previousWorld : {};
+        const patchWorld = worldDelta && typeof worldDelta === 'object' ? worldDelta : {};
+
+        return {
+            ...baseWorld,
+            ...patchWorld,
+        };
+    }
+
+    function mergeSnapshotDelta(previousSnapshot, deltaPayload) {
+        const baseSnapshot = previousSnapshot && typeof previousSnapshot === 'object' ? previousSnapshot : {};
+        const patch = deltaPayload && typeof deltaPayload === 'object' ? deltaPayload : {};
+        const mergedSnapshot = {
+            ...baseSnapshot,
+            serverTime: patch.serverTime || baseSnapshot.serverTime || new Date().toISOString(),
+            tick: hasOwn(patch, 'tick') ? (Number(patch.tick) || 0) : (Number(baseSnapshot.tick) || 0),
+        };
+
+        if (hasOwn(patch, 'worldVersion')) {
+            mergedSnapshot.worldVersion = Number(patch.worldVersion) || 0;
+        }
+
+        if (hasOwn(patch, 'self')) {
+            mergedSnapshot.self = patch.self;
+        }
+
+        if (hasOwn(patch, 'runtime')) {
+            mergedSnapshot.runtime = patch.runtime;
+        }
+
+        if (hasOwn(patch, 'settings')) {
+            mergedSnapshot.settings = patch.settings;
+        }
+
+        if (hasOwn(patch, 'players')) {
+            mergedSnapshot.players = mergePlayersDelta(baseSnapshot.players, patch.players);
+        }
+
+        if (hasOwn(patch, 'ai')) {
+            mergedSnapshot.ai = patch.ai;
+        }
+
+        if (hasOwn(patch, 'world')) {
+            mergedSnapshot.world = mergeWorldDelta(baseSnapshot.world, patch.world);
+        }
+
+        if (hasOwn(patch, 'leaderboard')) {
+            mergedSnapshot.leaderboard = patch.leaderboard;
+        }
+
+        if (hasOwn(patch, 'soccerLeaderboard')) {
+            mergedSnapshot.soccerLeaderboard = patch.soccerLeaderboard;
+        }
+
+        if (hasOwn(patch, 'playerChat')) {
+            mergedSnapshot.playerChat = mergePlayerChatDelta(baseSnapshot.playerChat, patch.playerChat);
+        }
+
+        return mergedSnapshot;
+    }
+
     function updateServerTimeEstimate(serverTimeIso) {
         const serverTimeMs = parseServerTimeMs(serverTimeIso);
         if (serverTimeMs <= 0) {
@@ -1728,6 +1872,7 @@
             : 0,
         lastSnapshotTick: -1,
         worldVersion: Number(bootstrapState?.worldVersion || initialWorldState?.version) || 0,
+        snapshotCache: null,
     };
 
     const keys = {};
@@ -1892,6 +2037,75 @@
             if (!isGameRunning) return;
             fetchGameState();
         }, delayMs);
+    }
+
+    function stopStateStream() {
+        if (stateStreamSource) {
+            stateStreamSource.close();
+            stateStreamSource = null;
+        }
+        stateStreamConnected = false;
+    }
+
+    function startStateStream() {
+        if (typeof window.EventSource !== 'function') {
+            return false;
+        }
+
+        stopStateStream();
+
+        try {
+            const streamUrl = getGameApiUrl('/stream');
+            const source = new EventSource(streamUrl, { withCredentials: true });
+            stateStreamSource = source;
+
+            source.onopen = () => {
+                stateStreamConnected = true;
+                if (statePollTimeout) {
+                    window.clearTimeout(statePollTimeout);
+                    statePollTimeout = null;
+                }
+            };
+
+            source.addEventListener('snapshot', (event) => {
+                try {
+                    const snapshot = JSON.parse(event.data || '{}');
+                    applySnapshot(snapshot);
+                } catch (error) {
+                    console.error('Failed to parse snapshot SSE payload:', error);
+                }
+            });
+
+            source.addEventListener('delta', (event) => {
+                try {
+                    const deltaPayload = JSON.parse(event.data || '{}');
+                    if (!stateSync.snapshotCache) {
+                        fetchGameState().catch(() => {});
+                        return;
+                    }
+
+                    const mergedSnapshot = mergeSnapshotDelta(stateSync.snapshotCache, deltaPayload);
+                    applySnapshot(mergedSnapshot);
+                } catch (error) {
+                    console.error('Failed to parse delta SSE payload:', error);
+                    fetchGameState().catch(() => {});
+                }
+            });
+
+            source.addEventListener('world_event_batch', () => {});
+
+            source.onerror = () => {
+                if (!isGameRunning) return;
+                stopStateStream();
+                scheduleNextStateFetch(STATE_POLL_BACKOFF_MS);
+            };
+
+            return true;
+        } catch (error) {
+            console.error('Failed to initialize SSE stream:', error);
+            stopStateStream();
+            return false;
+        }
     }
 
     async function sendCommand(type, payload = {}, { suppressErrorToast = false } = {}) {
@@ -2699,17 +2913,27 @@
     }
 
     function createRemotePlayerState(playerState, serverTimeMs = 0) {
+        const isAgent = playerState.actorType === 'agent';
         const palette = buildAppearancePalette(playerState.appearance);
+        const agentPalette = isAgent ? {
+            shirtColor: 0x0d9488,
+            pantsColor: 0x134e4a,
+            shoeColor: 0x475569,
+            hairColor: 0x64748b,
+        } : null;
         const remotePlayer = new Player(scene, playerState.name, {
             spawnPosition: playerState.position,
-            shirtColor: palette.shirtColor,
-            pantsColor: palette.pantsColor,
-            shoeColor: palette.shoeColor,
-            hairColor: palette.hairColor,
+            shirtColor: isAgent ? agentPalette.shirtColor : palette.shirtColor,
+            pantsColor: isAgent ? agentPalette.pantsColor : palette.pantsColor,
+            shoeColor: isAgent ? agentPalette.shoeColor : palette.shoeColor,
+            hairColor: isAgent ? agentPalette.hairColor : palette.hairColor,
         });
-        const remoteUi = attachActorUi(remotePlayer, playerState.name, {
-            backgroundColor: 'rgba(17, 24, 39, 0.84)',
-            textColor: '#f8fafc',
+        const displayName = isAgent ? `\u{1F916} ${playerState.name || 'Agente'}` : playerState.name;
+        const labelBg = isAgent ? 'rgba(13, 148, 136, 0.88)' : 'rgba(17, 24, 39, 0.84)';
+        const labelColor = isAgent ? '#f0fdfa' : '#f8fafc';
+        const remoteUi = attachActorUi(remotePlayer, displayName, {
+            backgroundColor: labelBg,
+            textColor: labelColor,
             width: 288,
             height: 64,
             scaleX: 3.2,
@@ -2738,6 +2962,7 @@
             targetRotationY: playerState.rotationY || Math.PI,
             appearanceSignature: getAppearanceSignature(playerState.appearance),
             samples: [],
+            isAgent: isAgent,
         };
 
         pushActorSample(remotePlayerState.samples, playerState, serverTimeMs);
@@ -2871,31 +3096,17 @@
             updateActorHitFeedback(aiUi, snapshot.ai);
         }
 
-        if (snapshot.world && Array.isArray(snapshot.world.trees)) {
-            world.syncTreeState(snapshot.world.trees);
-        }
-
-        if (snapshot.world) {
-            world.syncDroppedApples(snapshot.world.droppedApples);
-            world.syncSwordPickups(snapshot.world.swords);
-            world.syncBowPickups(snapshot.world.bows);
-            world.syncArrowProjectiles(snapshot.world.arrows);
-            world.syncElevators(snapshot.world.elevators);
-        }
-
-        if (snapshot.world && Array.isArray(snapshot.world.graves)) {
-            world.syncGraves(snapshot.world.graves);
+        if (snapshot.world && typeof snapshot.world === 'object') {
+            world.applyWorldPatch(snapshot.world);
         }
 
         if (snapshot.world && snapshot.world.soccer) {
             soccerBallCarrierId = String(snapshot.world.soccer.ball?.possessedByActorId || '').trim();
-            world.syncSoccerState(snapshot.world.soccer);
             handleSoccerGoalEvent(snapshot.world.soccer.lastGoalEvent);
         }
 
         if (snapshot.world && Number.isFinite(snapshot.world.bounds)) {
             stateSync.worldBounds = snapshot.world.bounds;
-            world.setWorldBounds(snapshot.world.bounds);
         }
 
         if (snapshot.leaderboard) {
@@ -2937,9 +3148,11 @@
                 remoteState.appearanceSignature = nextAppearanceSignature;
             }
 
-            updateLabelSprite(remoteState.labelSprite, playerState.name || 'Jogador', {
-                backgroundColor: 'rgba(17, 24, 39, 0.84)',
-                textColor: '#f8fafc',
+            const isRemoteAgent = remoteState.isAgent || playerState.actorType === 'agent';
+            const remoteLabelName = isRemoteAgent ? `\u{1F916} ${playerState.name || 'Agente'}` : (playerState.name || 'Jogador');
+            updateLabelSprite(remoteState.labelSprite, remoteLabelName, {
+                backgroundColor: isRemoteAgent ? 'rgba(13, 148, 136, 0.88)' : 'rgba(17, 24, 39, 0.84)',
+                textColor: isRemoteAgent ? '#f0fdfa' : '#f8fafc',
             });
             updateActorModelState(remoteState, playerState);
             updateActorVitals(remoteState, playerState);
@@ -2954,12 +3167,15 @@
             }
         });
 
+        stateSync.snapshotCache = snapshot;
         stateSync.remotePresenceInitialized = true;
     }
 
     async function fetchGameState() {
         if (stateSync.isFetching) {
-            scheduleNextStateFetch();
+            if (!stateStreamConnected) {
+                scheduleNextStateFetch();
+            }
             return;
         }
 
@@ -2993,7 +3209,7 @@
             console.error('Failed to fetch game state:', error);
         } finally {
             stateSync.isFetching = false;
-            if (shouldScheduleNext) {
+            if (shouldScheduleNext && !stateStreamConnected) {
                 scheduleNextStateFetch(nextDelayMs);
             }
         }
@@ -3041,7 +3257,12 @@
     saveStoredProfile(user, initialProfile);
     updateCamera(0, true);
 
-    fetchGameState();
+    const streamStarted = startStateStream();
+    if (!streamStarted) {
+        fetchGameState();
+    } else {
+        scheduleNextStateFetch(1500);
+    }
     movementSyncInterval = setInterval(flushMovementInput, INPUT_SYNC_INTERVAL_MS);
 
     function animate() {

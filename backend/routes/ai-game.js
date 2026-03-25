@@ -1,32 +1,31 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
+const { requireAuth } = require('../middleware/authenticate');
 const config = require('../config');
 const { insertLog } = require('../database/postgres');
+const { getRequestIp, getRequestUserAgent } = require('../shared/request');
 const { formatSuspicionDetails, validatePlayerCommandBody } = require('../games/garden-quest/command-security');
 
-function getRequestIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const rawIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || req.socket.remoteAddress || '';
-  return rawIp.split(',')[0].trim();
+function parseSinceSeq(value) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
+function handleSseSubscriptionError(error, res, next) {
+  if (error?.code === 'sse_capacity_exceeded') {
+    return res.status(429).json({
+      error: 'Realtime stream capacity reached. Try again in a few seconds.',
+      code: error.code,
+      details: error.details || null,
+    });
   }
 
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
+  return next(error);
 }
 
 async function logSuspiciousCommand(req, user, issues) {
   const details = formatSuspicionDetails(issues);
   const ip = getRequestIp(req);
-  const userAgent = normalizeText(req.headers['user-agent'], 512) || '';
+  const userAgent = getRequestUserAgent(req);
 
   console.warn(`Suspicious player command blocked for user ${user?.id || 'unknown'}: ${details}`);
 
@@ -45,36 +44,121 @@ async function logSuspiciousCommand(req, user, issues) {
   }
 }
 
-function createAiGameRoutes(aiGameEngine) {
+function createAiGameRoutes({
+  gameEngine = null,
+  worldGateway = null,
+  worldEventStreamService = null,
+  worldRuntimeRepository = null,
+} = {}) {
   const router = express.Router();
 
-  router.use((req, res, next) => {
-    const token = req.cookies?.auth_token;
-    if (!token) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
-
+  router.get('/public-state-live', async (req, res, next) => {
     try {
-      const decoded = jwt.verify(token, config.JWT_SECRET);
-      req.authUser = {
-        id: normalizeText(decoded?.id, 128),
-        name: normalizeText(decoded?.name, 255),
-      };
-
-      if (!req.authUser.id) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      if (worldGateway) {
+        return res.json(await worldGateway.getSpectatorState());
       }
 
-      next();
+      if (!gameEngine) {
+        throw new Error('World runtime is not configured');
+      }
+
+      return res.json(await gameEngine.getPublicState(null));
     } catch (error) {
-      return res.status(401).json({ error: 'Invalid or expired token' });
+      next(error);
+    }
+  });
+
+  router.get('/public-events', async (req, res, next) => {
+    try {
+      if (!worldRuntimeRepository) {
+        return res.status(503).json({ error: 'World event feed is not configured.' });
+      }
+
+      const sinceSeq = parseSinceSeq(req.query.sinceSeq);
+      const events = await worldRuntimeRepository.listWorldRuntimeEvents({
+        realmId: config.REALM_ID,
+        sinceSeq,
+        limit: Math.min(200, Number.parseInt(req.query.limit || '100', 10) || 100),
+        visibility: 'public',
+      });
+
+      return res.json({
+        realmId: config.REALM_ID,
+        sinceSeq,
+        untilSeq: Number(events[events.length - 1]?.seq) || sinceSeq,
+        entries: events,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/public-stream', async (req, res, next) => {
+    try {
+      if (!worldEventStreamService) {
+        return res.status(503).json({ error: 'Realtime stream is not configured.' });
+      }
+
+      await worldEventStreamService.subscribePublic(req, res);
+      return undefined;
+    } catch (error) {
+      return handleSseSubscriptionError(error, res, next);
+    }
+  });
+
+  router.use(requireAuth);
+
+  router.get('/stream', async (req, res, next) => {
+    try {
+      if (!worldEventStreamService) {
+        return res.status(503).json({ error: 'Realtime stream is not configured.' });
+      }
+
+      await worldEventStreamService.subscribePlayer(req, res, req.authUser);
+      return undefined;
+    } catch (error) {
+      return handleSseSubscriptionError(error, res, next);
+    }
+  });
+
+  router.get('/events', async (req, res, next) => {
+    try {
+      if (!worldRuntimeRepository) {
+        return res.status(503).json({ error: 'World event feed is not configured.' });
+      }
+
+      const sinceSeq = parseSinceSeq(req.query.sinceSeq);
+      const events = await worldRuntimeRepository.listWorldRuntimeEvents({
+        realmId: config.REALM_ID,
+        sinceSeq,
+        limit: Math.min(200, Number.parseInt(req.query.limit || '100', 10) || 100),
+        visibility: 'public',
+      });
+
+      return res.json({
+        realmId: config.REALM_ID,
+        sinceSeq,
+        untilSeq: Number(events[events.length - 1]?.seq) || sinceSeq,
+        entries: events,
+      });
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/public-state', async (req, res, next) => {
     try {
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(await aiGameEngine.getPublicState(req.authUser));
+      if (worldGateway) {
+        return res.json(await worldGateway.getPublicState(req.authUser));
+      }
+
+      if (!gameEngine) {
+        throw new Error('World runtime is not configured');
+      }
+
+      return res.json(await gameEngine.getPublicState(req.authUser));
     } catch (error) {
       next(error);
     }
@@ -83,7 +167,15 @@ function createAiGameRoutes(aiGameEngine) {
   router.get('/bootstrap-state', async (req, res, next) => {
     try {
       res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(await aiGameEngine.getBootstrapState());
+      if (!gameEngine) {
+        return res.json({
+          serverTime: new Date().toISOString(),
+          worldVersion: 0,
+          settings: {},
+          world: null,
+        });
+      }
+      return res.json(await gameEngine.getBootstrapState());
     } catch (error) {
       next(error);
     }
@@ -103,7 +195,9 @@ function createAiGameRoutes(aiGameEngine) {
       return res.status(400).json({ error: 'Comando invalido.' });
     }
 
-    const result = await aiGameEngine.applyPlayerCommand(req.authUser, validation.normalizedCommand);
+    const result = worldGateway
+      ? { ok: true, queued: true, queueAccepted: Boolean(await worldGateway.enqueuePlayerCommand(req.authUser, validation.normalizedCommand)) }
+      : await gameEngine.applyPlayerCommand(req.authUser, validation.normalizedCommand);
 
     if (!result?.ok) {
       return res.status(result?.statusCode || 400).json({

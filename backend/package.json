@@ -5,8 +5,23 @@
   "main": "server.js",
   "scripts": {
     "check:env": "node scripts/check-env.js",
+    "test:tasks": "node --test tests/implementation-validation.test.js",
+    "test:routes": "node --test tests/routes/*.test.js",
+    "test:integration": "node --test tests/integration/*.test.js",
+    "test:e2e": "cd .. && NODE_PATH=backend/node_modules playwright test e2e/playwright/auth-hub-game.spec.ts",
+    "migrate:up": "node-pg-migrate up --migrations-dir migrations",
+    "migrate:down": "node-pg-migrate down --migrations-dir migrations",
+    "migrate:create": "node-pg-migrate create --migrations-dir migrations",
+    "lint": "eslint . --ext .js",
+    "format": "prettier --write \"**/*.js\"",
+    "format:check": "prettier --check \"**/*.js\"",
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start:legacy": "node server.js",
+    "start:api": "node api-server.js",
+    "start:worker": "node worker.js",
+    "dev": "node --watch server.js",
+    "dev:api": "node --watch api-server.js",
+    "dev:worker": "node --watch worker.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.6",
@@ -17,6 +32,14 @@
     "googleapis": "^144.0.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.13.1"
+    "node-pg-migrate": "^8.0.3",
+    "pg": "^8.13.1",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "eslint": "^8.57.1",
+    "prettier": "^3.6.2",
+    "supertest": "^7.1.4"
   }
 }

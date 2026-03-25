@@ -52,3 +52,13 @@ auxiliares/
 # Scripts Utilitários
 kill-8080.bat
 kill-8080.ps1
+
+# Ignore pastas iniciadas com numerais
+[0-9]*/
+
+# Artefatos legados arquivados (nao operacionais)
+archive/olds/
+archive/GardenQuest Projeto Detalhado.html
+
+# Artefatos de execucao de testes locais
+test-results/

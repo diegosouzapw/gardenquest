@@ -1,39 +1,17 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { insertLog } = require('../database/postgres');
+const { getAuthenticatedUser } = require('../middleware/authenticate');
+const { normalizeEmail, normalizeText } = require('../shared/normalize');
+const { getRequestIp, getRequestUserAgent } = require('../shared/request');
 const { getGameBySlug, listGames, normalizeSlug } = require('../services/game-registry');
 
-const AUTH_COOKIE_NAME = 'auth_token';
 const PLATFORM_HUB_PATH = '/hub.html';
 const PLATFORM_LOGIN_PATH = '/index.html';
 
-function getRequestIp(req) {
-  const forwardedFor = req.headers['x-forwarded-for'];
-  const rawIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || req.socket.remoteAddress || '';
-  return rawIp.split(',')[0].trim();
-}
-
-function normalizeText(value, maxLength) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed.slice(0, maxLength);
-}
-
-function normalizeEmail(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim().toLowerCase();
-  return trimmed || null;
+function isAuthorizedAdminEmail(email) {
+  const normalizedEmail = normalizeEmail(email);
+  return Boolean(normalizedEmail) && config.ADMIN_GOOGLE_EMAILS.includes(normalizedEmail);
 }
 
 function normalizePlatformEventName(value) {
@@ -47,32 +25,19 @@ function normalizePlatformEventName(value) {
     : null;
 }
 
-function getAuthenticatedUser(req) {
-  const token = req.cookies?.[AUTH_COOKIE_NAME];
-  if (!token) {
+function toPlatformUser(user) {
+  if (!user?.id) {
     return null;
   }
 
-  try {
-    const decoded = jwt.verify(token, config.JWT_SECRET);
-    const userId = normalizeText(decoded?.id, 128);
-
-    if (!userId) {
-      return null;
-    }
-
-    const email = normalizeEmail(decoded?.email);
-
-    return {
-      id: userId,
-      name: normalizeText(decoded?.name, 255),
-      email,
-      picture: normalizeText(decoded?.picture, 2048),
-      isAdmin: Boolean(email) && config.ADMIN_GOOGLE_EMAILS.includes(email),
-    };
-  } catch (error) {
-    return null;
-  }
+  return {
+    id: normalizeText(user.id, 128),
+    name: normalizeText(user.name, 255),
+    email: normalizeEmail(user.email),
+    picture: normalizeText(user.picture, 2048),
+    sessionId: normalizeText(user.sessionId || user.sid, 128),
+    isAdmin: isAuthorizedAdminEmail(user.email),
+  };
 }
 
 function buildBootstrapPayload(user) {
@@ -104,14 +69,17 @@ function buildEventDetails({ gameSlug = null, details = null }) {
 function createPlatformRoutes() {
   const router = express.Router();
 
-  router.use((req, res, next) => {
-    const authenticatedUser = getAuthenticatedUser(req);
+  router.use(async (req, res, next) => {
+    const authenticatedUser = await getAuthenticatedUser(req, {
+      requireActiveSession: true,
+      touchSession: true,
+    });
 
     if (!authenticatedUser) {
-      return res.status(401).json({ error: 'Not authenticated' });
+      return res.status(401).json({ error: 'Invalid, expired, or revoked session' });
     }
 
-    req.authUser = authenticatedUser;
+    req.authUser = toPlatformUser(authenticatedUser);
     return next();
   });
 
@@ -152,7 +120,7 @@ function createPlatformRoutes() {
       await insertLog({
         event,
         ip: getRequestIp(req),
-        userAgent: normalizeText(req.headers['user-agent'], 512) || '',
+        userAgent: getRequestUserAgent(req),
         userId: req.authUser.id,
         userName: req.authUser.name,
         details: buildEventDetails({ gameSlug, details }),

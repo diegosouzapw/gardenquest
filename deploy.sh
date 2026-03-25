@@ -115,7 +115,7 @@ FRONTEND_URL=""
 if [ "$TARGET" = "all" ] || [ "$TARGET" = "backend" ]; then
   echo ""
   echo "Deploying Backend..."
-cd backend
+  cd backend
 
 BACKEND_ENV_VARS=(
   "NODE_ENV=production"
@@ -192,6 +192,7 @@ if [ ${#BACKEND_SECRETS[@]} -gt 0 ]; then
   )
 fi
 
+  "${BACKEND_DEPLOY_CMD[@]}"
   BACKEND_URL=$(gcloud run services describe "$BACKEND_SERVICE_NAME" --region "$REGION" --format='value(status.url)')
   echo "Backend: $BACKEND_URL"
   cd ..
@@ -208,9 +209,9 @@ fi
 if [ "$TARGET" = "all" ] || [ "$TARGET" = "frontend" ]; then
   echo ""
   echo "Deploying Frontend..."
-cd frontend
+  cd frontend
 
-FRONTEND_ENV_VARS="BACKEND_UPSTREAM=$BACKEND_URL"
+  FRONTEND_ENV_VARS="BACKEND_UPSTREAM=$BACKEND_URL"
 
   gcloud run deploy "$FRONTEND_SERVICE_NAME" \
     --source . \
@@ -240,25 +241,30 @@ fi
 if [ -n "$FRONTEND_URL" ]; then
   echo ""
   echo "Updating Backend callback and frontend URL..."
-FINAL_BACKEND_ENV_VARS="FRONTEND_URL=$FRONTEND_URL,GOOGLE_REDIRECT_URI=$FRONTEND_URL/auth/callback,COOKIE_SAME_SITE=Lax"
+  FINAL_BACKEND_ENV_VARS="FRONTEND_URL=$FRONTEND_URL,GOOGLE_REDIRECT_URI=$FRONTEND_URL/auth/callback,COOKIE_SAME_SITE=Lax"
 
-gcloud run services update "$BACKEND_SERVICE_NAME" \
-  --region "$REGION" \
-  --update-env-vars "$FINAL_BACKEND_ENV_VARS"
+  gcloud run services update "$BACKEND_SERVICE_NAME" \
+    --region "$REGION" \
+    --update-env-vars "$FINAL_BACKEND_ENV_VARS"
 
-echo ""
-echo "----------------------------------"
-echo "  Deploy Complete"
-echo "----------------------------------"
-echo ""
-echo "  Frontend URL: $FRONTEND_URL"
-echo "  Backend URL:  $BACKEND_URL"
-echo ""
-echo "  Action required in Google Cloud Console:"
-echo "  1. Authorized JavaScript origins:"
-echo "     $FRONTEND_URL"
-echo ""
-echo "  2. Authorized redirect URIs:"
-echo "     $FRONTEND_URL/auth/callback"
-echo ""
-echo "----------------------------------"
+  echo ""
+  echo "----------------------------------"
+  echo "  Deploy Complete"
+  echo "----------------------------------"
+  echo ""
+  echo "  Frontend URL: $FRONTEND_URL"
+  echo "  Backend URL:  $BACKEND_URL"
+  echo ""
+  echo "  Action required in Google Cloud Console:"
+  echo "  1. Authorized JavaScript origins:"
+  echo "     $FRONTEND_URL"
+  echo ""
+  echo "  2. Authorized redirect URIs:"
+  echo "     $FRONTEND_URL/auth/callback"
+  echo ""
+  echo "----------------------------------"
+else
+  echo ""
+  echo "Deploy Complete (frontend callback update skipped; FRONTEND_URL is empty)."
+  echo "Backend URL:  $BACKEND_URL"
+fi

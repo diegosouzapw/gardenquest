@@ -11,7 +11,7 @@
         body { margin: 0; padding: 40px; display: block; overflow-x: hidden; overflow-y: auto; background: radial-gradient(circle at center, #0b2a1a 0%, #051008 100%); color: #eafbea; font-family: 'Outfit', sans-serif; min-height: 100vh; }
         h1 { text-align: center; color: #4ade80; text-shadow: 0 0 15px rgba(74, 222, 128, 0.4); }
         h2 { margin-bottom: 14px; color: #86efac; }
-        .dashboard-container { max-width: 1200px; margin: 0 auto; background: rgba(0, 0, 0, 0.6); padding: 30px; border-radius: 16px; border: 1px solid rgba(74, 222, 128, 0.2); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5); display: none; }
+        .dashboard-container { max-width: 1320px; margin: 0 auto; background: rgba(0, 0, 0, 0.6); padding: 30px; border-radius: 16px; border: 1px solid rgba(74, 222, 128, 0.2); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5); display: none; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 40px; }
         .stat-card { background: rgba(74, 222, 128, 0.05); padding: 20px; border-radius: 12px; text-align: center; border: 1px solid rgba(74, 222, 128, 0.2); backdrop-filter: blur(10px); transition: transform 0.3s ease; }
         .stat-card:hover { transform: translateY(-3px); background: rgba(74, 222, 128, 0.1); border-color: rgba(74, 222, 128, 0.4); }
@@ -24,6 +24,11 @@
         th { position: sticky; top: 0; z-index: 1; background: rgba(10, 32, 17, 0.96); color: #4ade80; text-transform: uppercase; font-size: 0.9em; letter-spacing: 1px; }
         tr:hover { background: rgba(255, 255, 255, 0.03); }
         .section-copy { color: #b7c9bc; margin-top: -4px; margin-bottom: 14px; font-size: 0.95rem; }
+        .ops-btn { border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; background: rgba(255,255,255,0.08); color: #fff; padding: 8px 10px; font-size: 0.8rem; cursor: pointer; }
+        .ops-btn.ok { background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.32); }
+        .ops-btn.warn { background: rgba(245,158,11,0.18); border-color: rgba(245,158,11,0.32); }
+        .ops-btn.neutral { background: rgba(59,130,246,0.16); border-color: rgba(59,130,246,0.32); }
+        .ops-btn:disabled { opacity: 0.45; cursor: not-allowed; }
         @media (max-width: 720px) {
             body { padding: 20px; }
             .dashboard-container { padding: 20px; }
@@ -42,7 +47,7 @@
     </style>
 </head>
 <body>
-    <div class="auth-overlay" id="authOverlay">
+    <div class="auth-overlay" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authCopy">
         <div class="auth-card">
             <h2 id="authTitle">Painel Restrito</h2>
             <p class="auth-copy" id="authCopy">Entre com a conta Google autorizada para acessar o dashboard administrativo.</p>
@@ -56,71 +61,69 @@
         <h1>Dashboard de Logs</h1>
 
         <div class="stats-grid">
-            <div class="stat-card">
-                <h3>Total de Visitas</h3>
-                <p id="totalViews">0</p>
-            </div>
-            <div class="stat-card">
-                <h3>IPs Unicos</h3>
-                <p id="uniqueIPS">0</p>
-            </div>
-            <div class="stat-card">
-                <h3>Conexoes</h3>
-                <p id="totalConnects">0</p>
-            </div>
-            <div class="stat-card">
-                <h3>Eventos do Jogo</h3>
-                <p id="totalGameEvents">0</p>
-            </div>
+            <div class="stat-card"><h3>Total de Visitas</h3><p id="totalViews">0</p></div>
+            <div class="stat-card"><h3>IPs Unicos</h3><p id="uniqueIPS">0</p></div>
+            <div class="stat-card"><h3>Conexoes</h3><p id="totalConnects">0</p></div>
+            <div class="stat-card"><h3>Eventos do Jogo</h3><p id="totalGameEvents">0</p></div>
+            <div class="stat-card"><h3>Sessoes Ativas</h3><p id="activeSessions">0</p></div>
+            <div class="stat-card"><h3>Agents em Quarantine</h3><p id="quarantinedAgents">0</p></div>
+            <div class="stat-card"><h3>Fila Pendente</h3><p id="pendingQueue">0</p></div>
+            <div class="stat-card"><h3>Dead Letters</h3><p id="deadLetterCount">0</p></div>
         </div>
 
         <div class="table-section">
             <h2>Logs do Site</h2>
             <p class="section-copy">Login, conexao, troca de pagina e demais eventos institucionais.</p>
-            <div class="table-scroll">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Data/Hora</th>
-                            <th>Evento</th>
-                            <th>IP</th>
-                            <th>Usuario</th>
-                            <th>Detalhes</th>
-                            <th>User Agent</th>
-                        </tr>
-                    </thead>
-                    <tbody id="siteLogsTableBody">
-                        <tr><td colspan="6" style="text-align: center;">Carregando...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <div class="table-scroll"><table><thead><tr><th>Data/Hora</th><th>Evento</th><th>IP</th><th>Usuario</th><th>Detalhes</th><th>User Agent</th></tr></thead><tbody id="siteLogsTableBody"><tr><td colspan="6" style="text-align: center;">Carregando...</td></tr></tbody></table></div>
         </div>
 
         <div class="table-section">
             <h2>Logs do Jogo</h2>
             <p class="section-copy">Eventos da simulacao, jogadores, IA, acoes e seguranca do jogo.</p>
-            <div class="table-scroll">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Data/Hora</th>
-                            <th>Evento</th>
-                            <th>IP</th>
-                            <th>Usuario</th>
-                            <th>Detalhes</th>
-                            <th>User Agent</th>
-                        </tr>
-                    </thead>
-                    <tbody id="gameLogsTableBody">
-                        <tr><td colspan="6" style="text-align: center;">Carregando...</td></tr>
-                    </tbody>
-                </table>
-            </div>
+            <div class="table-scroll"><table><thead><tr><th>Data/Hora</th><th>Evento</th><th>IP</th><th>Usuario</th><th>Detalhes</th><th>User Agent</th></tr></thead><tbody id="gameLogsTableBody"><tr><td colspan="6" style="text-align: center;">Carregando...</td></tr></tbody></table></div>
+        </div>
+
+        <div class="table-section">
+            <h2>Operacao · Sessoes Ativas</h2>
+            <p class="section-copy">Visao rapida das ultimas sessoes autenticadas ainda validas.</p>
+            <div class="table-scroll"><table><thead><tr><th>Ultimo Seen</th><th>Usuario</th><th>Email</th><th>IP</th><th>User Agent</th><th>Acoes</th></tr></thead><tbody id="activeSessionsTableBody"><tr><td colspan="6" style="text-align: center;">Carregando...</td></tr></tbody></table></div>
+        </div>
+
+        <div class="table-section">
+            <h2>Operacao · Saude dos Agents</h2>
+            <p class="section-copy">Falhas, suspeitas, quarantine e acoes administrativas dos endpoints/bots.</p>
+            <div class="table-scroll"><table><thead><tr><th>Agent</th><th>Modo</th><th>Status</th><th>Falhas</th><th>Suspeitas</th><th>Quarantine ate</th><th>Ultima Razao</th><th>Acoes</th></tr></thead><tbody id="agentHealthTableBody"><tr><td colspan="8" style="text-align: center;">Carregando...</td></tr></tbody></table></div>
+        </div>
+
+        <div class="table-section">
+            <h2>Operacao · Dead Letter Queue</h2>
+            <p class="section-copy">Comandos que estouraram tentativa, ficaram inconsistentes ou precisam de replay manual.</p>
+            <div class="table-scroll"><table><thead><tr><th>ID</th><th>Tipo</th><th>Ator</th><th>Tentativas</th><th>Erro</th><th>Concluido</th><th>Payload/Resultado</th><th>Acoes</th></tr></thead><tbody id="deadLetterTableBody"><tr><td colspan="8" style="text-align: center;">Carregando...</td></tr></tbody></table></div>
         </div>
     </div>
 
-    <script src="js/config.js?v=13"></script>
-    <script src="js/auth.js?v=11"></script>
-    <script src="js/dashboard.js?v=12"></script>
+    <div class="ops-modal-backdrop" id="opsModalBackdrop" hidden>
+        <section
+            class="ops-modal"
+            id="opsModalDialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="opsModalTitle"
+            aria-describedby="opsModalDescription"
+        >
+            <h2 class="ops-modal-title" id="opsModalTitle">Confirmar acao</h2>
+            <p class="ops-modal-description" id="opsModalDescription">Tem certeza que deseja continuar?</p>
+            <div class="ops-modal-actions">
+                <button type="button" class="ops-modal-btn cancel" id="opsModalCancelBtn">Cancelar</button>
+                <button type="button" class="ops-modal-btn confirm" id="opsModalConfirmBtn">Confirmar</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="ops-toast-region" id="opsToastRegion" aria-live="polite" aria-atomic="true"></div>
+
+    <script src="js/config.js?v=14"></script>
+    <script src="shared/js/auth.js?v=1"></script>
+    <script src="js/dashboard.js?v=13"></script>
 </body>
 </html>

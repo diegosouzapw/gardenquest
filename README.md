@@ -1,26 +1,99 @@
 # Garden Quest Platform
 
-Garden Quest Platform e um projeto web com backend em Node.js/Express e frontend estatico em HTML/CSS/JavaScript. O sistema usa Google OAuth para autenticacao, Supabase/PostgreSQL para persistencia de eventos, usuarios, perfis, chat e ranking, e uma IA opcional via OpenAI para controlar um NPC no jardim.
+Garden Quest e uma plataforma de jogos multiplayer online com backend em Node.js/Express e frontend estatico em HTML/CSS/JavaScript. O sistema usa Google OAuth para autenticacao, PostgreSQL para persistencia, e suporta **agentes autonomos de IA** com governanca, moderacao e controle operacional.
 
-Hoje a plataforma ja possui:
+## O que a plataforma oferece
 
-- login centralizado
-- hub de jogos em `frontend/public/hub.html`
-- SDK compartilhado em `frontend/public/js/platform-sdk.js`
-- o Garden Quest publicado em `/games/garden-quest/`
+| Funcionalidade | Descricao |
+|---|---|
+| **Login Google OAuth** | Com `state` anti-CSRF, cookie `httpOnly`, validacao de `Origin` |
+| **Hub de jogos** | `hub.html` + `platform-sdk.js` + `game-registry.js` |
+| **Motor do jogo** | Backend autoritativo com tick loop, ate 60 jogadores + agentes simultaneos |
+| **NPC com IA** | OpenAI opcional com fallback deterministico |
+| **Agentes autonomos (BYOK)** | Usuarios registram bots com API key propria ou endpoint remoto |
+| **Providers plugaveis** | `server_managed`, `hosted_api_key`, `remote_endpoint`, `omniroute` |
+| **SecretVault** | Cofre AES-256-GCM para chaves de terceiros (BYOK) |
+| **World Agents** | Bots participam do mundo: andam, bebem, comem, falam |
+| **Realm Leases** | Leader election com heartbeat para evitar duplicacao de schedulers |
+| **API / Worker Split** | Separacao de HTTP e loop do mundo em processos distintos |
+| **SSE Realtime** | Server-Sent Events para jogadores e espectadores |
+| **Deltas + Event Feed** | Atualizacoes incrementais com diff de snapshots |
+| **Postgres Notify Bus** | LISTEN/NOTIFY para reduzir polling entre API e Worker |
+| **Sessao revogavel** | Sessoes com `sid` no JWT e tabela `auth_sessions` |
+| **Governanca de agentes** | Budget diario, rate limit e circuit breaker por agente/provider |
+| **Moderacao de fala** | Filtragem de URLs, termos bloqueados, deteccao de spam |
+| **Admin Controls** | Ações admin: revogar sessao, pausar agents, retry de dead letters |
+| **Chat persistente** | `chat_messages` com blocklist de palavras |
+| **Perfil de jogador** | Avatar editavel (apelido, cor) |
+| **Dashboard admin** | Allowlist por e-mail Google, visao operacional |
+| **Deploy GCP** | Dockerfiles, deploy scripts, Secret Manager suportado |
 
 ## Estrutura
 
-- `backend/`: API, autenticacao, seguranca, eventos, catalogo da plataforma, persistencia e simulacao.
-- `frontend/public/`: paginas estaticas do login, hub, dashboard e jogos.
-- `frontend/public/games/`: entrada canonica de cada jogo publicado.
-- `frontend/public/js/platform-sdk.js`: SDK compartilhado entre hub e jogos.
-- `backend/services/game-registry.js`: catalogo central de jogos da plataforma.
-- `backend/game/`: motor da simulacao, regras do mundo e validacao de comandos.
-- `backend/database/`: integracao PostgreSQL/Supabase e schema SQL.
-- `legacy/`: artefatos antigos mantidos apenas por historico.
-- `docs/security-review.md`: revisao de seguranca feita neste ciclo.
-- `docs/add-game.md`: guia para integrar novos jogos ao hub.
+```
+frontend/public/
+├── index.html              → tela de login Google
+├── hub.html                → hub de jogos
+├── games/garden-quest/     → jogo 3D principal (Garden Quest)
+├── dashboard.html          → painel administrativo
+├── js/
+│   ├── auth.js             → logica de autenticacao
+│   ├── config.js           → configuracao frontend
+│   ├── dashboard.js        → logica do dashboard
+│   ├── hub.js              → logica do hub
+│   └── platform-sdk.js     → SDK compartilhado
+└── css/
+
+backend/
+├── server.js               → entry point legado (all-in-one)
+├── api-server.js           → entry point HTTP (API + SSE)
+├── worker.js               → entry point runtime (fila + snapshots)
+├── config/index.js          → configuracao centralizada (~30 variaveis de agentes)
+├── middleware/
+│   ├── security.js          → helmet, cors, rate limit
+│   └── authenticate.js      → middleware JWT reutilizavel
+├── routes/
+│   ├── auth.js              → Google OAuth + JWT
+│   ├── ai-game.js           → rotas do jogo
+│   ├── agents.js            → CRUD de agentes (/api/v1/agents)
+│   ├── logs.js              → dashboard admin
+│   └── platform.js          → catalogo de jogos
+├── games/garden-quest/
+│   ├── engine.js            → motor do mundo (~4200 linhas, com suporte a agents)
+│   ├── world-definition.js  → cenario/mapa
+│   └── command-security.js  → validacao de comandos
+├── agents/
+│   ├── providers/           → HostedApiKey, RemoteEndpoint, ServerManaged, OmniRoute
+│   ├── contracts/           → AgentRuntime interface
+│   └── schemas/             → agent-action schema
+├── services/
+│   ├── openai-client.js     → integracao IA do NPC
+│   ├── game-registry.js     → registro de jogos
+│   ├── agents/
+│   │   ├── AgentDecisionService.js  → roteamento de decisoes
+│   │   ├── AgentManagementService.js → CRUD de agentes
+│   │   ├── AgentGovernanceService.js → circuit breaker + budget
+│   │   └── AgentModerationService.js → moderacao de fala
+│   ├── crypto/
+│   │   └── SecretVault.js   → cofre AES-256-GCM para BYOK
+│   ├── realm/
+│   │   └── RealmLeaseService.js → leader election
+│   └── world/
+│       ├── WorldRuntimeGateway.js     → API-side state reader
+│       ├── WorldRuntimeWorker.js      → Worker process
+│       ├── WorldEventStreamService.js → SSE push
+│       ├── WorldDeltaService.js       → diff de snapshots
+│       └── PostgresNotificationBus.js → LISTEN/NOTIFY
+├── database/
+│   ├── postgres.js          → conexao DB
+│   ├── agents.js            → CRUD agentes + listAllActiveAgents
+│   ├── realm-leases.js      → realm_leases table
+│   ├── world-runtime.js     → snapshots + command queue
+│   ├── auth-sessions.js     → sessoes revogaveis
+│   └── supabase-schema.sql  → schema canonico
+└── scripts/check-env.js     → validacao de ambiente
+
+```
 
 ## Requisitos
 
@@ -29,6 +102,7 @@ Hoje a plataforma ja possui:
 - Banco PostgreSQL compativel com o schema em `backend/database/supabase-schema.sql`
 - Credenciais Google OAuth
 - Chave OpenAI opcional para ativar o NPC com IA
+- `AGENT_SECRET_MASTER_KEY_HEX` para o SecretVault (64 hex chars em producao)
 
 ## Configuracao
 
@@ -36,80 +110,47 @@ Hoje a plataforma ja possui:
    - `.env.local` para desenvolvimento local
    - `.env.staging` para staging
    - `.env.production` para deploy final
-2. Copie a partir do exemplo correspondente:
-   - `.env.local.example`
-   - `.env.staging.example`
-   - `.env.production.example`
+2. Copie a partir do exemplo correspondente (`.env.local.example`, etc.)
 3. Preencha no minimo:
    - `GOOGLE_CLIENT_ID`
    - `ADMIN_GOOGLE_EMAILS`
-4. Para cada segredo abaixo, escolha um dos dois modos:
-   - valor inline no `.env`
-   - referencia via `*_SECRET_NAME` e `*_SECRET_VERSION`
-   Segredos suportados:
+4. Para cada segredo abaixo, escolha valor inline ou referencia ao Secret Manager:
    - `GOOGLE_CLIENT_SECRET`
    - `JWT_SECRET`
    - `SUPABASE_DB_URL`
    - `OPENAI_API_KEY`
+   - `AGENT_SECRET_MASTER_KEY_HEX`
 5. Em staging/producao, ajuste tambem:
    - `FRONTEND_URL`
    - `GOOGLE_REDIRECT_URI`
    - `COOKIE_SECURE=true`
    - `COOKIE_DOMAIN` se houver dominio dedicado
-   - `SUPABASE_DB_SSL_CA_PATH` se o ambiente exigir um arquivo CA PEM para validar o certificado do banco
 
-### Segredos No Deploy
+### Variaveis de Agentes
 
-Para `staging` e `production`, o projeto aceita dois modos:
+| Variavel | Default | Fase |
+|---|---|---|
+| `AGENT_WORLD_ENABLED` | `true` | V4 |
+| `REALM_ID` | `gardenquest-world-01` | V6 |
+| `WORLD_COMMAND_POLL_MS` | `500` | V6 |
+| `WORLD_SNAPSHOT_FLUSH_MS` | `1000` | V6 |
+| `WORLD_RUNTIME_SNAPSHOT_TTL_MS` | `15000` | V6 |
+| `WORLD_EVENT_STREAM_ENABLED` | `true` | V7 |
+| `WORLD_EVENT_STREAM_SNAPSHOT_EVERY` | `1` | V8 |
+| `WORLD_EVENT_STREAM_MAX_SUBSCRIBERS` | `300` | V12 |
+| `WORLD_EVENT_STREAM_MAX_PUBLIC_SUBSCRIBERS` | `220` | V12 |
+| `WORLD_EVENT_STREAM_MAX_PLAYER_SUBSCRIBERS` | `220` | V12 |
+| `WORLD_RUNTIME_BUS_ENABLED` | `true` | V9 |
+| `AGENT_DEFAULT_DAILY_RUN_BUDGET` | `5000` | V10 |
+| `AGENT_DEFAULT_MIN_DECISION_INTERVAL_MS` | `2000` | V10 |
+| `AGENT_CIRCUIT_FAILURE_THRESHOLD` | `5` | V10 |
+| `AGENT_SPEECH_MODERATION_ENABLED` | `true` | V11 |
+| `AGENT_SPEECH_ALLOW_URLS` | `false` | V11 |
+| `AGENT_SPEECH_BLOCKLIST` | `(vazio)` | V11 |
+| `OPENAI_NPC_SYSTEM_PROMPT_VERSION` | `v1` | V12 |
+| `OPENAI_NPC_SYSTEM_PROMPT_FILE` | `(vazio)` | V12 |
 
-- Segredos inline no arquivo `.env`
-- Referencias ao Google Secret Manager
-
-Voce nao precisa usar o Google Secret Manager para o deploy funcionar. Ele e recomendado, mas opcional.
-
-Exemplo de segredos inline:
-
-```env
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-JWT_SECRET=your-jwt-secret
-ADMIN_GOOGLE_EMAILS=admin@example.com
-SUPABASE_DB_URL=postgresql://...
-OPENAI_API_KEY=<your-openai-api-key>
-```
-
-Exemplo com Google Secret Manager:
-
-```env
-GOOGLE_CLIENT_ID=your-client-id.apps.googleuser...
-GOOGLE_CLIENT_SECRET_SECRET_NAME=gardenquest-google-client...
-JWT_SECRET_SECRET_NAME=gardenquest-jwt...
-JWT_SECRET_SECRET_VERSION=1
-SUPABASE_DB_URL_SECRET_NAME=gardenquest-supabase-db...
-SUPABASE_DB_URL_SECRET_VERSION=1
-OPENAI_API_KEY_SECRET_NAME=gardenquest-openai-...
-OPENAI_API_KEY_SECRET_VERSION=1
-ADMIN_GOOGLE_EMAILS=admin@example.com
-```
-
-Regra pratica:
-
-- Se usar valor inline, deixe o `*_SECRET_NAME` vazio para aquele segredo.
-- Se usar Secret Manager, deixe o valor inline vazio para aquele segredo.
-- `ADMIN_GOOGLE_EMAILS` nao passa por Secret Manager neste projeto; ele continua como variavel de ambiente normal.
-
-Importante: as credenciais locais atuais devem ser rotacionadas antes de qualquer deploy. Veja `docs/security-review.md`.
-
-### Modelo de ambiente
-
-- `APP_ENV` define o alvo operacional: `local`, `staging` ou `production`.
-- `NODE_ENV` define o modo de runtime do backend. Use `development` apenas em `APP_ENV=local`.
-- O backend falha cedo se detectar combinacoes inseguras, por exemplo:
-  - `APP_ENV=local` apontando para URLs remotas
-  - `APP_ENV=staging` ou `production` com `COOKIE_SECURE=false`
-  - `GOOGLE_REDIRECT_URI` fora de `/auth/callback`
-  - `COOKIE_DOMAIN` fora do dominio do frontend
-- O frontend nao e fronteira de seguranca. Autenticacao e autorizacao continuam no backend.
+Veja `backend/config/index.js` para a lista completa.
 
 ## Execucao local
 
@@ -119,74 +160,144 @@ Banco local com Docker:
 docker compose -f docker-compose.local.yml up -d
 ```
 
-Validar configuracao:
+Validacao de ambiente:
 
 ```bash
-cd backend
-npm install
-npm run check:env
+npm --prefix backend run check:env
 ```
 
-Backend:
+Backend (modo legado all-in-one):
 
 ```bash
 cd backend
 npm install
-node server.js
+npm run start:legacy
+```
+
+Backend (modo recomendado API + Worker em dois processos):
+
+```bash
+cd backend
+npm install
+npm run start:api
+```
+
+em outro terminal:
+
+```bash
+cd backend
+npm run start:worker
 ```
 
 Frontend:
-
-- Sirva `frontend/public/` na mesma origem configurada em `FRONTEND_URL`.
-- Exemplo com Python:
 
 ```bash
 cd frontend/public
 python -m http.server 5500
 ```
 
-- Em ambiente local, o callback OAuth do Google deve apontar para `http://localhost:8080/auth/callback`.
-- Crie um OAuth Client separado no Google apenas para localhost. Nao reutilize client secret nem redirect URI de producao.
-- Depois de subir o backend, valide `http://localhost:8080/health`. Se aparecer `426 Upgrade Required`, outro processo esta ocupando a `8080`.
-- Fora do local, a conexao com o banco valida o certificado TLS por padrao. Se o runtime nao confiar automaticamente na cadeia do provedor, preencha `SUPABASE_DB_SSL_CA_PATH` com o caminho de um arquivo PEM.
+Validacao automatizada das tasks:
+
+```bash
+npm --prefix backend run test:tasks
+```
+
+Lint (backend):
+
+```bash
+npm --prefix backend run lint
+```
+
+Formatacao (backend):
+
+```bash
+npm --prefix backend run format
+npm --prefix backend run format:check
+```
+
+Se a API estiver em porta diferente de `8080`, abra uma vez o frontend com override:
+
+```text
+http://localhost:5500/?api=http://localhost:18080
+```
+
+Depois, o valor fica salvo no browser (`img_platform_api_url`).
 
 ## Deploy
 
-- `deploy.ps1`: fluxo de deploy para PowerShell/Windows.
-- `deploy.sh`: fluxo de deploy para Bash/Linux/macOS.
-- `backend/Dockerfile` e `frontend/Dockerfile`: imagens separadas para API e frontend.
-- `docs/openai-secret-manager.md`: passo a passo para proteger `OPENAI_API_KEY` no Google Secret Manager.
-- `docs/jwt-secret-manager.md`: passo a passo para proteger `JWT_SECRET` no Google Secret Manager.
-- `docs/supabase-secret-manager.md`: passo a passo para proteger `SUPABASE_DB_URL` no Google Secret Manager.
-- `docs/google-client-secret-manager.md`: passo a passo para proteger `GOOGLE_CLIENT_SECRET` no Google Secret Manager.
-- `docs/local-development.md`: guia completo para rodar localmente com OAuth, banco e validacoes de ambiente.
+- `deploy.ps1` / `deploy.sh`: scripts de deploy
+- `backend/Dockerfile` e `frontend/Dockerfile`: imagens separadas
+- Docs sobre Secret Manager em `docs/`
+- `docs/LOCAL_DEVELOPMENT.md`: guia completo para dev local
 
-Se voce nao usa Google Secret Manager, basta preencher os segredos inline no `.env.staging` ou `.env.production` e deixar os campos `*_SECRET_NAME` vazios.
+### Deploy via shell (Cloud Run)
 
-Deploy com arquivo explicito:
+Uso:
 
 ```bash
-ENV_FILE=.env.staging ./deploy.sh my-gcp-project southamerica-east1
+./deploy.sh <ENV_FILE> <TARGET> <PROJECT_ID> <REGION>
 ```
 
-```powershell
-.\deploy.ps1 -ProjectId my-gcp-project -Region southamerica-east1 -EnvFile .env.production
+- `ENV_FILE`: caminho do arquivo de ambiente (`.env.production`, `.env.staging`, etc.)
+- `TARGET`: `all`, `backend` ou `frontend`
+- `PROJECT_ID`: projeto GCP alvo
+- `REGION`: regiao Cloud Run (default: `southamerica-east1`)
+
+Exemplo:
+
+```bash
+./deploy.sh .env.production all meu-projeto-gcp southamerica-east1
 ```
 
-Os arquivos `.dockerignore` e `.gcloudignore` foram preparados para evitar envio de segredos, caches e artefatos locais no contexto de build.
+Validacao de sintaxe antes do deploy:
+
+```bash
+bash -n deploy.sh
+```
+
+## CI
+
+Pipeline minimo em GitHub Actions:
+
+- arquivo: `.github/workflows/ci.yml`
+- etapas: `check:env`, `lint`, `test:tasks`
+- runtime: Node.js 20
 
 ## Seguranca
 
-- O backend usa `helmet`, `cors`, cookies `httpOnly` e rate limits por rota.
-- O login Google valida um `state` de curta duracao preso ao navegador para reduzir login CSRF e troca forcada de conta.
-- Os `POST` autenticados mais sensiveis validam `Origin`/`Referer` em producao para reduzir CSRF em logout, sync e comandos do jogo.
-- Comandos do jogador passam por validacao e deteccao de payload suspeito.
-- O dashboard administrativo usa a sessao Google e uma allowlist por email configurada em `ADMIN_GOOGLE_EMAILS`.
-- Os segredos reais nao devem ficar em git nem em build contexts.
-- O schema do banco ativa RLS e revoga acesso de `anon` e `authenticated` nas tabelas `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages`, para que esses dados nao fiquem expostos pela Data API do Supabase. O backend continua acessando por conexao direta ao Postgres.
-- O chat do jogo agora e persistente em `chat_messages`, carrega as ultimas 20 mensagens ao iniciar e pode bloquear termos configurados em `PLAYER_CHAT_BLOCKED_WORDS`.
+- `helmet`, `cors`, cookies `httpOnly` e rate limits por rota
+- Login Google com `state` anti-CSRF
+- Validacao de `Origin`/`Referer` em `POST` autenticados
+- Validacao e deteccao de payload suspeito em comandos
+- Dashboard admin com allowlist por email
+- RLS ativado em todas as tabelas
+- **SecretVault (BYOK):** AES-256-GCM para chaves de agentes
+- **Governanca:** Circuit breaker + budget diario por agente
+- **Moderacao:** Filtragem de URLs, blocklist, deteccao de spam
 
-## Observacoes de manutencao
+## Documentacao
 
-- Em banco novo, aplique `backend/database/supabase-schema.sql` antes de subir o servidor para criar `event_logs`, `users`, `player_profiles`, `actor_stats` e `chat_messages`.
-- O projeto agora assume apenas o schema canonico. Se existir um banco antigo fora desse modelo, alinhe-o manualmente antes do deploy ou recrie o schema a partir de `backend/database/supabase-schema.sql`.
+- `docs/README.md` — indice de leitura e mapa da documentacao
+- `docs/USER_GUIDE.md` — guia passo a passo para uso da plataforma
+- `docs/LOCAL_DEVELOPMENT.md` — setup de ambiente local para dev
+- `docs/PLAYBOOK_LOCAL.md` — runbook detalhado para subir local
+- `docs/PLAYBOOK_NUVEM.md` — runbook detalhado para subir na nuvem
+- `docs/DEVELOPER_GUIDE.md` — guia tecnico de integracao e contribuicao
+- `docs/OPENAPI.yaml` — contrato OpenAPI 3.0.3 das rotas HTTP do backend
+- `docs/SECURITY_REVIEW.md` — revisao de seguranca e hardening
+
+## API de Agentes
+
+Contrato completo da API:
+
+```text
+docs/OPENAPI.yaml
+```
+
+```
+GET    /api/v1/agents           → Listar agentes do usuario
+POST   /api/v1/agents           → Criar agente
+POST   /api/v1/agents/:id/api-key   → Salvar API key (BYOK)
+POST   /api/v1/agents/:id/endpoint  → Configurar endpoint remoto
+POST   /api/v1/agents/:id/pause     → Pausar agente
+```

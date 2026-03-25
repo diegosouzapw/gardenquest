@@ -2,6 +2,22 @@
 
 Este documento descreve como subir o projeto localmente sem enfraquecer o modelo de seguranca do deploy.
 
+## Resumo em 5 minutos
+
+Para um setup rapido de desenvolvimento:
+
+1. `cp .env.local.example .env.local`
+2. ajustar `SUPABASE_DB_URL` e `JWT_SECRET` (Google OAuth **nao e necessario** localmente)
+3. `docker compose -f docker-compose.local.yml up -d`
+4. `npm --prefix backend install`
+5. `npm --prefix backend run start:api` e `npm --prefix backend run start:worker`
+6. `cd frontend/public && python3 -m http.server 5500`
+7. abrir `http://localhost:5500` e usar o login dev
+
+> **Nota:** Google OAuth so e obrigatorio em producao. Localmente, o sistema oferece um login dev automatico.
+
+Se quiser detalhes de cada etapa e de seguranca, continue nas secoes abaixo.
+
 ## Objetivo
 
 O projeto foi estruturado para manter a seguranca no backend, mesmo com o codigo do frontend publico. Isso significa:
@@ -66,8 +82,9 @@ Na pratica:
 
 - Node.js 20+
 - npm 10+
+- Docker + Docker Compose
 - um banco PostgreSQL compativel
-- um cliente OAuth Web do Google para localhost
+- (para producao) um cliente OAuth Web do Google
 
 ## Fluxo recomendado para rodar localmente
 
@@ -91,11 +108,16 @@ SUPABASE_DB_SSL_CA_PATH=
 
 Tambem preencha:
 
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
 - `JWT_SECRET`
 - `ADMIN_GOOGLE_EMAILS`
 - `SUPABASE_DB_URL`
+
+Google OAuth **nao e necessario** para desenvolvimento local. O sistema oferece um login dev automatico quando `APP_ENV=local`.
+
+Se quiser usar Google OAuth localmente, preencha tambem:
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
 
 ## Banco de dados local
 
@@ -107,7 +129,11 @@ O repositorio inclui um arquivo pronto:
 docker compose -f docker-compose.local.yml up -d
 ```
 
-Esse container sobe um Postgres local em `localhost:5432`.
+Esse container sobe um Postgres local na porta configurada no `docker-compose.local.yml` (padrao `5432`).
+
+> **Conflito de porta:** Se a porta `5432` ja estiver ocupada por outro PostgreSQL,
+> altere o mapeamento de porta em `docker-compose.local.yml` (ex: `5434:5432`)
+> e ajuste `SUPABASE_DB_URL` para usar a nova porta.
 
 Connection string esperada no `.env.local`:
 
@@ -164,9 +190,27 @@ Entao o correto e:
 - alinhar ou recriar o banco para o schema de `backend/database/supabase-schema.sql`
 - depois subir o backend
 
-## Google OAuth local
+## Autenticacao local (Dev Login)
 
-Crie um cliente OAuth do tipo `Web application` separado do cliente de producao.
+Quando `APP_ENV=local`, o sistema habilita automaticamente um **login de desenvolvimento** que nao depende do Google OAuth.
+
+Na tela de login (`index.html`), alem do botao Google, aparece um formulario "Dev Mode" com campos de nome e email pre-preenchidos. Basta clicar "Entrar como Dev" para criar uma sessao JWT local.
+
+O login dev:
+
+- gera um user ID deterministico baseado no email
+- cria uma sessao no banco identica ao fluxo Google
+- define o cookie `auth_token` normalmente
+- so funciona em `APP_ENV=local` — em producao os endpoints retornam `404`
+
+### Endpoints do login dev
+
+- `GET /auth/dev-mode` — retorna se o dev login esta ativo e o email default
+- `POST /auth/dev-login` — recebe `{ name, email }` e cria a sessao
+
+## Google OAuth (obrigatorio somente em producao)
+
+Para desenvolvimento local, **Google OAuth e opcional**. Se quiser usar, crie um cliente OAuth do tipo `Web application` separado do cliente de producao.
 
 ### Valores que devem entrar no Google Cloud
 
@@ -218,7 +262,7 @@ http://localhost:8081/auth/callback
 E abra o frontend uma vez com override de API:
 
 ```text
-http://localhost:5500/?apiUrl=http://localhost:8081
+http://localhost:5500/?api=http://localhost:8081
 ```
 
 O frontend salva esse valor no navegador e passa a usar `8081` nas proximas cargas.
@@ -226,6 +270,7 @@ O frontend salva esse valor no navegador e passa a usar `8081` nas proximas carg
 Para limpar esse override depois, rode no console do navegador:
 
 ```js
+localStorage.removeItem('img_platform_api_url');
 localStorage.removeItem('gardenquest.localApiUrl');
 ```
 
@@ -251,10 +296,27 @@ Esse comando mostra:
 
 ## Subindo o backend
 
+Modo recomendado (API + Worker):
+
 ```bash
 cd backend
 npm install
-node server.js
+npm run start:api
+```
+
+Em outro terminal:
+
+```bash
+cd backend
+npm run start:worker
+```
+
+Modo legado (monolito):
+
+```bash
+cd backend
+npm install
+npm run start:legacy
 ```
 
 Se o banco estiver correto, o backend deve subir em:
@@ -281,15 +343,47 @@ Exemplo com Live Server:
 
 ## Fluxo final de teste local
 
-1. criar `.env.local`
-2. preencher OAuth local e banco local
+1. criar `.env.local` a partir de `.env.local.example`
+2. preencher `SUPABASE_DB_URL`, `JWT_SECRET` e `ADMIN_GOOGLE_EMAILS`
 3. subir o Postgres com `docker compose -f docker-compose.local.yml up -d`
 4. aplicar `backend/database/supabase-schema.sql` se o banco ainda estiver vazio
 5. rodar `cd backend && npm install && npm run check:env`
-6. rodar `cd backend && node server.js`
-7. rodar `cd frontend/public && python -m http.server 5500`
-8. abrir `http://localhost:5500`
-9. testar login com Google
+6. rodar `cd backend && npm run start:api`
+7. em outro terminal, rodar `cd backend && npm run start:worker`
+8. rodar `cd frontend/public && python3 -m http.server 5500`
+9. abrir `http://localhost:5500`
+10. clicar "Entrar como Dev" (ou Google, se configurado)
+
+## IA via provedor compativel (OmniRoute)
+
+O backend suporta tanto a API nativa da OpenAI quanto qualquer provedor compativel via `OPENAI_BASE_URL`.
+
+### OpenAI direto
+
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.4-nano
+```
+
+### OmniRoute ou outro provedor compativel
+
+```env
+OPENAI_API_KEY=sk-sua-chave
+OPENAI_BASE_URL=https://cloud.omniroute.online/sua-key/v1
+OPENAI_MODEL=kr/claude-sonnet-4.5
+OPENAI_API_TIMEOUT_MS=60000
+```
+
+Quando `OPENAI_BASE_URL` esta preenchido:
+
+- o backend usa a API padrao de Chat Completions (`/chat/completions`)
+- o formato de mensagens e `messages: [{ role, content }]`
+- compativel com qualquer proxy OpenAI-compatible
+
+Quando `OPENAI_BASE_URL` esta vazio:
+
+- usa a API nativa da OpenAI Responses (`/v1/responses`)
+- formato exclusivo da OpenAI com `instructions`, `input`, `text.format`
 
 ## Validacao rapida
 
@@ -339,7 +433,7 @@ No `netstat`, o que importa e:
 Correcao:
 
 - pare o processo que estiver em `LISTENING` na `8080`
-- suba o backend novamente com `node server.js`
+- suba o backend novamente com `npm run start:legacy` (ou `start:api` + `start:worker`)
 
 ### `FRONTEND_URL must use localhost... in APP_ENV=local`
 
@@ -368,12 +462,13 @@ Causas comuns:
 
 - `FRONTEND_URL` nao bate com a origem real do frontend
 - `GOOGLE_REDIRECT_URI` nao bate com o cadastrado no Google Cloud
-- o frontend ainda esta apontando para outra porta de API salva em `gardenquest.localApiUrl`
+- o frontend ainda esta apontando para outra porta de API salva em `img_platform_api_url` ou `gardenquest.localApiUrl`
 - login feito com conta fora de `ADMIN_GOOGLE_EMAILS` ao acessar o dashboard
 
 Se voce precisou testar a API em outra porta e quer voltar ao fluxo padrao:
 
 ```js
+localStorage.removeItem('img_platform_api_url');
 localStorage.removeItem('gardenquest.localApiUrl');
 location.href = 'http://localhost:5500/';
 ```
@@ -402,3 +497,24 @@ Recomendacao:
 - local para desenvolvimento diario
 - staging para validar comportamento proximo da producao
 - producao com segredos isolados em Secret Manager
+
+## Validar e executar deploy via script
+
+Mesmo em maquina local, valide o script antes de usar:
+
+```bash
+bash -n deploy.sh
+```
+
+Formato do comando:
+
+```bash
+./deploy.sh <ENV_FILE> <TARGET> <PROJECT_ID> <REGION>
+```
+
+Exemplos:
+
+```bash
+./deploy.sh .env.staging backend meu-projeto-gcp southamerica-east1
+./deploy.sh .env.production all meu-projeto-gcp southamerica-east1
+```

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Erro 404 - GardenQuest</title>
+    <style>
+        :root { color-scheme: dark; --bg:#04110a; --panel:rgba(9,24,15,.86); --border:rgba(34,197,94,.28); --text:#d1fae5; --muted:#9ecab4; --accent:#34d399; }
+        * { box-sizing: border-box; }
+        body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:"Outfit","Segoe UI",sans-serif; background:radial-gradient(circle at 20% 20%, #0f2f1d, var(--bg)); color:var(--text); padding:20px; }
+        .card { width:min(680px,100%); background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:28px; box-shadow:0 18px 44px rgba(0,0,0,.42); }
+        .code { margin:0; font-size:clamp(2rem,6vw,3rem); letter-spacing:.08em; color:var(--accent); }
+        h1 { margin:8px 0 0; font-size:1.4rem; }
+        p { margin:12px 0 0; line-height:1.6; color:var(--muted); }
+        .actions { margin-top:22px; display:flex; flex-wrap:wrap; gap:10px; }
+        .btn { text-decoration:none; border-radius:10px; border:1px solid rgba(52,211,153,.35); background:rgba(52,211,153,.14); color:#ecfdf5; padding:10px 14px; font-weight:600; }
+        .btn.secondary { background:rgba(148,163,184,.12); border-color:rgba(148,163,184,.3); color:#dbeafe; }
+    </style>
+</head>
+<body>
+    <main class="card" role="main" aria-labelledby="title">
+        <p class="code">404</p>
+        <h1 id="title">Pagina nao encontrada</h1>
+        <p>O caminho solicitado nao existe ou foi movido.</p>
+        <p>Use os atalhos abaixo para retornar a uma area valida do produto.</p>
+        <div class="actions">
+            <a class="btn" href="/hub.html">Abrir Hub</a>
+            <a class="btn secondary" href="/index.html">Abrir Login</a>
+        </div>
+    </main>
+</body>
+</html>

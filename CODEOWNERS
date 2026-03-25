@@ -1,0 +1,14 @@
+# Global fallback owner
+* @diegosouzapw
+
+# Backend
+/backend/ @diegosouzapw
+
+# Frontend
+/frontend/ @diegosouzapw
+
+# Documentation and governance
+/docs/ @diegosouzapw
+/CONTRIBUTING.md @diegosouzapw
+/CHANGELOG.md @diegosouzapw
+/CODEOWNERS @diegosouzapw
