@@ -238,6 +238,69 @@ function serializeSession(session, currentSessionId = null) {
 function createAuthRoutes({ gameEngine = null, worldGateway = null } = {}) {
   const router = express.Router();
 
+  // ─── Dev-only login (APP_ENV=local) ───────────────────────────
+  router.get('/dev-mode', (req, res) => {
+    if (config.APP_ENV !== 'local') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const defaultEmail = config.ADMIN_GOOGLE_EMAILS?.[0] || 'dev@localhost';
+    return res.json({
+      devLoginEnabled: true,
+      defaultName: 'Dev User',
+      defaultEmail,
+    });
+  });
+
+  router.post('/dev-login', express.json(), async (req, res) => {
+    if (config.APP_ENV !== 'local') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : 'Dev User';
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : 'dev@localhost';
+
+    if (!name || !email) {
+      return res.status(400).json({ error: 'name and email are required' });
+    }
+
+    const userId = crypto.createHash('sha256').update(`dev:${email}`).digest('hex').slice(0, 32);
+
+    try {
+      await syncUserRecord({ id: userId, name, email, picture: null });
+
+      const authSessionId = crypto.randomUUID();
+      await createAuthSession({
+        id: authSessionId,
+        userId,
+        userEmail: email,
+        userName: name,
+        ip: getRequestIp(req),
+        userAgent: getRequestUserAgent(req, 512) || null,
+        expiresAt: new Date(Date.now() + COOKIE_MAX_AGE_MS),
+      });
+
+      const jwtToken = jwt.sign(
+        { id: userId, name, email, picture: null, sid: authSessionId },
+        config.JWT_SECRET,
+        { expiresIn: config.JWT_EXPIRES_IN }
+      );
+
+      res.cookie(AUTH_COOKIE_NAME, jwtToken, getCookieOptions());
+      trackSilentEvent(req, 'dev_login', { id: userId, name });
+
+      return res.json({
+        ok: true,
+        redirectTo: '/hub.html',
+        user: { id: userId, name, email, isAdmin: isAuthorizedAdminEmail(email) },
+      });
+    } catch (error) {
+      console.error('Dev login error:', error.message);
+      return res.status(500).json({ error: 'Dev login failed' });
+    }
+  });
+  // ────────────────────────────────────────────────────────────────
+
   router.get('/google', (req, res) => {
     trackSilentEvent(req, 'login_start');
     const redirectPath = normalizeFrontendPath(req.query?.redirect, '/hub.html');

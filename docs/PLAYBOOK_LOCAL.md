@@ -36,17 +36,31 @@ APP_ENV=local
 NODE_ENV=development
 PORT=8080
 FRONTEND_URL=http://localhost:5500
-GOOGLE_REDIRECT_URI=http://localhost:8080/auth/callback
 JWT_SECRET=troque-por-um-segredo-forte
 SUPABASE_DB_URL=postgresql://postgres:postgres@localhost:5432/gardenquest_dev
 SUPABASE_DB_SSL=false
 ADMIN_GOOGLE_EMAILS=seu-email@dominio.com
 ```
 
-3. Se quiser IA real de NPC, configure:
+> **Google OAuth nao e necessario** para rodar localmente. O sistema habilita
+> um login dev automatico quando `APP_ENV=local`.
+
+3. Para IA real de NPC, configure um dos provedores:
+
+OpenAI direto:
 
 ```env
-OPENAI_API_KEY=...
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.4-nano
+```
+
+OmniRoute ou outro provedor compativel:
+
+```env
+OPENAI_API_KEY=sk-sua-chave
+OPENAI_BASE_URL=https://cloud.omniroute.online/sua-key/v1
+OPENAI_MODEL=kr/claude-sonnet-4.5
+OPENAI_API_TIMEOUT_MS=60000
 ```
 
 4. Valide o ambiente:
@@ -116,12 +130,14 @@ Se a API rodar em outra porta:
 ## 8. Smoke test funcional
 
 1. Abrir `index.html`
-2. Fazer login Google
+2. Clicar "Entrar como Dev" (formulario pre-preenchido aparece automaticamente)
 3. Confirmar redirecionamento para `hub.html`
 4. Clicar em `Abrir jogo`
 5. Confirmar carregamento de `games/garden-quest/`
 6. Testar `Voltar ao hub`
 7. Abrir `dashboard.html` (somente admin allowlist)
+
+> Em producao, o login dev nao esta disponivel e apenas o Google OAuth aparece.
 
 ## 9. Validacoes tecnicas
 
@@ -160,6 +176,20 @@ E2E_BASE_URL=http://127.0.0.1:5500 npm --prefix backend run test:e2e
 localStorage.removeItem('img_platform_api_url');
 localStorage.removeItem('gardenquest.localApiUrl');
 ```
+
+- `porta 5432 ocupada`:
+  - alterar o mapeamento em `docker-compose.local.yml` (ex: `5434:5432`)
+  - ajustar `SUPABASE_DB_URL` para usar a porta nova
+
+- `porta 8080 ocupada`:
+  - verificar com `fuser 8080/tcp` ou `lsof -i :8080`
+  - matar o processo ou usar outra porta com `PORT=8081`
+
+- `IA nao funciona (apenas fallback deterministico)`:
+  - verificar se `OPENAI_API_KEY` esta preenchida
+  - se usando OmniRoute, confirmar `OPENAI_BASE_URL` e `OPENAI_MODEL`
+  - reiniciar API e Worker apos alterar `.env.local`
+  - aumentar `OPENAI_API_TIMEOUT_MS` para provedores mais lentos (ex: 60000)
 
 ## 11. Encerrar ambiente
 

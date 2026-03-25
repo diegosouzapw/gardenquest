@@ -123,48 +123,95 @@ function resolveNpcSystemPrompt({ forceReload = false, logger = console } = {}) 
   return output;
 }
 
+function resolveApiTarget() {
+  const customBaseUrl = String(config.OPENAI_BASE_URL || '').trim();
+  if (customBaseUrl) {
+    try {
+      const parsed = new URL(customBaseUrl);
+      return {
+        hostname: parsed.host,
+        basePath: parsed.pathname.replace(/\/+$/, ''),
+        protocol: parsed.protocol,
+        usesChatCompletions: true,
+      };
+    } catch (_error) {
+      // fall through to default
+    }
+  }
+
+  return {
+    hostname: 'api.openai.com',
+    basePath: '',
+    protocol: 'https:',
+    usesChatCompletions: false,
+  };
+}
+
 function createOpenAiDecisionClient() {
   const npcSystemPrompt = resolveNpcSystemPrompt();
+  const apiTarget = resolveApiTarget();
 
   async function decideNextAction(observation) {
     if (!config.OPENAI_API_KEY) {
       return null;
     }
 
-    const payload = JSON.stringify({
-      model: config.OPENAI_MODEL,
-      store: false,
-      reasoning: {
-        effort: config.AI_REASONING_EFFORT,
-      },
-      max_output_tokens: 240,
-      instructions: npcSystemPrompt.instructions,
-      input: JSON.stringify(observation),
-      metadata: {
-        npc_prompt_version: npcSystemPrompt.version,
-        npc_prompt_source: npcSystemPrompt.source,
-      },
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'garden_ai_decision',
-          strict: true,
-          schema: DECISION_SCHEMA,
-        },
-      },
-    });
+    let payload;
+    let apiPath;
 
+    if (apiTarget.usesChatCompletions) {
+      // Standard Chat Completions API (OmniRoute, etc.)
+      payload = JSON.stringify({
+        model: config.OPENAI_MODEL,
+        max_tokens: 240,
+        messages: [
+          { role: 'system', content: npcSystemPrompt.instructions },
+          { role: 'user', content: JSON.stringify(observation) },
+        ],
+        response_format: { type: 'json_object' },
+      });
+      apiPath = `${apiTarget.basePath}/chat/completions`;
+    } else {
+      // OpenAI Responses API (native OpenAI)
+      payload = JSON.stringify({
+        model: config.OPENAI_MODEL,
+        store: false,
+        reasoning: {
+          effort: config.AI_REASONING_EFFORT,
+        },
+        max_output_tokens: 240,
+        instructions: npcSystemPrompt.instructions,
+        input: JSON.stringify(observation),
+        metadata: {
+          npc_prompt_version: npcSystemPrompt.version,
+          npc_prompt_source: npcSystemPrompt.source,
+        },
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'garden_ai_decision',
+            strict: true,
+            schema: DECISION_SCHEMA,
+          },
+        },
+      });
+      apiPath = '/v1/responses';
+    }
+
+    const url = `${apiTarget.protocol}//${apiTarget.hostname}${apiPath}`;
     const response = await postJson({
-      hostname: 'api.openai.com',
-      path: '/v1/responses',
+      url,
       body: payload,
       timeoutMs: config.OPENAI_API_TIMEOUT_MS,
       headers: buildHeaders(Buffer.byteLength(payload)),
     });
 
-    const outputText = extractOutputText(response);
+    const outputText = apiTarget.usesChatCompletions
+      ? extractChatCompletionText(response)
+      : extractOutputText(response);
+
     if (!outputText) {
-      throw new Error('OpenAI response did not contain output_text.');
+      throw new Error('AI response did not contain valid output text.');
     }
 
     return parseDecisionJson(outputText);
@@ -173,6 +220,11 @@ function createOpenAiDecisionClient() {
   return {
     decideNextAction,
   };
+}
+
+function extractChatCompletionText(response) {
+  const content = response?.choices?.[0]?.message?.content;
+  return typeof content === 'string' ? content.trim() : '';
 }
 
 function buildHeaders(contentLength) {
@@ -254,8 +306,7 @@ function isRetryableTransportError(error) {
     || code === 'ENOTFOUND';
 }
 
-async function postJson({ hostname, path, body, headers, timeoutMs }) {
-  const url = `https://${hostname}${path}`;
+async function postJson({ url, body, headers, timeoutMs }) {
   const maxAttempts = 3;
   let lastError = null;
 

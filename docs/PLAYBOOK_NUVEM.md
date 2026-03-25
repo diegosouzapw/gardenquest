@@ -91,6 +91,20 @@ OPENAI_API_KEY_SECRET_NAME=OPENAI_API_KEY
 OPENAI_API_KEY_SECRET_VERSION=latest
 ```
 
+### IA em producao
+
+O backend suporta OpenAI diretamente ou qualquer provedor compativel via `OPENAI_BASE_URL`.
+
+Se usar OmniRoute:
+
+```env
+OPENAI_BASE_URL=https://cloud.omniroute.online/sua-key/v1
+OPENAI_MODEL=kr/claude-sonnet-4.5
+OPENAI_API_TIMEOUT_MS=60000
+```
+
+Se `OPENAI_BASE_URL` estiver vazio, o backend usa a API nativa da OpenAI.
+
 ## 5. Executar deploy
 
 Deploy completo (backend + frontend):
@@ -125,11 +139,15 @@ curl -s https://SEU_BACKEND/health
 
 ## 7. Smoke test em producao/staging
 
+> **Importante:** Em producao, o login dev nao esta disponivel.
+> Apenas o Google OAuth aparece na tela de login.
+
 1. Abrir frontend cloud
-2. Login Google
+2. Login Google (obrigatorio em producao)
 3. Fluxo `index -> hub -> game`
 4. Dashboard admin com usuario allowlist
 5. Validar stream/eventos no jogo
+6. Se IA configurada, verificar NPC ativo no leaderboard
 
 ## 8. Checklist de seguranca
 

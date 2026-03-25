@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
-const pgMigrate = require('node-pg-migrate').default;
+const { runner: pgMigrate } = require('node-pg-migrate');
 const config = require('../config');
 
 let pool;
