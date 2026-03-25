@@ -29,7 +29,7 @@ Pode usar **Git Submodules** ou **symlinks** para mapear as pastas.
 
 1. **Registro**: Adicione o jogo em `backend/services/game-registry.js`
 2. **Frontend**: Configure `window.PLATFORM_GAME_CONFIG` no `index.html`
-3. **Backend**: Importe o motor e monte a rota no `server.js`
+3. **Backend**: Importe o motor e monte a rota no `api-server.js` (ou `server.js` no modo legado)
 
 ---
 
@@ -77,3 +77,60 @@ WebGL exige limpeza profunda ao sair do jogo:
 - `Platform.requireAuth()`: Garante que o usuário está logado
 - `Platform.backToHub()`: Retorna ao Hub limpando a sessão
 - `Platform.trackEvent()`: Registra métricas de engajamento
+- `Platform.openGame(slug)`: Abre jogo e preserva override de API quando aplicável (`?api=...`)
+
+---
+
+## 8. Modos de Runtime
+
+### Modo recomendado (V12)
+- `npm --prefix backend run start:api`
+- `npm --prefix backend run start:worker`
+
+### Modo legado
+- `npm --prefix backend run start:legacy`
+
+Regras:
+- novos jogos devem ser compatíveis com modo API/Worker;
+- o legado existe para compatibilidade e rollback.
+
+---
+
+## 9. Checklist de Integração de Novo Jogo
+
+1. Registrar jogo em `backend/services/game-registry.js`.
+2. Expor `window.PLATFORM_GAME_CONFIG` no `index.html` do jogo.
+3. Garantir `apiBasePath` e rotas backend do jogo.
+4. Implementar proteção auth (`Platform.requireAuth`).
+5. Implementar retorno seguro ao hub (`Platform.backToHub`).
+6. Garantir limpeza de recursos WebGL ao sair.
+7. Garantir fallback de API via `?api=` e storage `img_platform_api_url`.
+
+---
+
+## 10. Validacao Minima Obrigatoria
+
+Antes de merge:
+
+```bash
+npm --prefix backend run check:env
+npm --prefix backend run test:tasks
+```
+
+Smoke manual:
+1. `index -> hub -> jogo`.
+2. Canvas renderizando sem erro fatal.
+3. `Voltar ao hub -> abrir jogo novamente`.
+4. Sem regressao de auth/cookie (`/auth/me` com 200).
+
+Para ambientes com API em porta nao padrao:
+- abrir frontend com `?api=http://localhost:SUA_PORTA_API`.
+
+---
+
+## 11. Observabilidade Operacional
+
+- `/health`: estado do runtime e lease.
+- `/api/v1/system/dashboard`: logs institucionais.
+- `/api/v1/system/ops-dashboard`: sessoes, fila, estado de agentes.
+- dashboard web: `frontend/public/dashboard.html`.

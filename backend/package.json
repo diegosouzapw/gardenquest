@@ -5,8 +5,14 @@
   "main": "server.js",
   "scripts": {
     "check:env": "node scripts/check-env.js",
+    "test:tasks": "node --test tests/implementation-validation.test.js",
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start:legacy": "node server.js",
+    "start:api": "node api-server.js",
+    "start:worker": "node worker.js",
+    "dev": "node --watch server.js",
+    "dev:api": "node --watch api-server.js",
+    "dev:worker": "node --watch worker.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.6",

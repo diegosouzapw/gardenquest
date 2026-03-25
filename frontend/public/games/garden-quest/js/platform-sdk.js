@@ -25,6 +25,40 @@
             : fallbackPath;
     }
 
+    function attachApiOverrideToRoute(route) {
+        if (typeof route !== 'string' || !route.trim()) {
+            return route;
+        }
+
+        const normalizedRoute = route.trim();
+        let apiOrigin = '';
+
+        try {
+            apiOrigin = new URL(resolveApiUrl(), window.location.origin).origin;
+        } catch (error) {
+            apiOrigin = '';
+        }
+
+        if (!apiOrigin || apiOrigin === window.location.origin) {
+            return normalizedRoute;
+        }
+
+        try {
+            const targetUrl = new URL(normalizedRoute, window.location.origin);
+            if (!targetUrl.searchParams.has('api')) {
+                targetUrl.searchParams.set('api', apiOrigin);
+            }
+
+            if (targetUrl.origin === window.location.origin) {
+                return `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`;
+            }
+
+            return targetUrl.toString();
+        } catch (error) {
+            return normalizedRoute;
+        }
+    }
+
     async function safeReadJson(response) {
         try {
             return await response.json();
@@ -189,16 +223,18 @@
             throw new Error(`Game "${slug}" is not registered.`);
         }
 
+        const targetRoute = attachApiOverrideToRoute(game.route);
+
         if (replace) {
-            window.location.replace(game.route);
+            window.location.replace(targetRoute);
             return;
         }
 
-        window.location.assign(game.route);
+        window.location.assign(targetRoute);
     }
 
     function backToHub({ replace = false } = {}) {
-        const hubPath = getGameContext().hubPath || DEFAULT_HUB_PATH;
+        const hubPath = attachApiOverrideToRoute(getGameContext().hubPath || DEFAULT_HUB_PATH);
 
         if (replace) {
             window.location.replace(hubPath);

@@ -1,9 +1,13 @@
 const config = require('../../config');
 
 function normalizeSpeech(value, maxChars) {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== 'string') {
+    return null;
+  }
   const compact = value.replace(/\s+/g, ' ').trim();
-  if (!compact) return null;
+  if (!compact) {
+    return null;
+  }
   return compact.slice(0, Math.max(1, Math.trunc(maxChars || config.AGENT_SPEECH_MAX_CHARS || 96)));
 }
 
@@ -12,7 +16,9 @@ function buildFlag(code, severity, detail) {
 }
 
 class AgentModerationService {
-  constructor({ logger = console } = {}) { this.logger = logger; }
+  constructor({ logger = console } = {}) {
+    this.logger = logger;
+  }
 
   moderateDecision({ agent = null, decision = {}, policy = {} } = {}) {
     const speechMaxChars = Math.max(1, Math.trunc(policy?.speechMaxChars || config.AGENT_SPEECH_MAX_CHARS || 96));
@@ -21,11 +27,15 @@ class AgentModerationService {
     let moderatedSpeech = speech;
 
     if (!config.AGENT_SPEECH_MODERATION_ENABLED) {
-      return { decision: { ...decision, speech: moderatedSpeech }, moderation: { changed: false, blocked: false, suspicious: false, flags } };
+      return {
+        decision: { ...decision, speech: moderatedSpeech },
+        moderation: { changed: false, blocked: false, suspicious: false, flags },
+      };
     }
 
     if (moderatedSpeech && !config.AGENT_SPEECH_ALLOW_URLS) {
-      if (/(https?:\/\/|www\.|discord\.gg|t\.me\/|@\w+\.\w+)/i.test(moderatedSpeech)) {
+      const hasUrl = /(https?:\/\/|www\.|discord\.gg|t\.me\/|@\w+\.\w+)/i.test(moderatedSpeech);
+      if (hasUrl) {
         flags.push(buildFlag('external_link', 'high', 'speech contains URL or external contact pattern'));
         moderatedSpeech = null;
       }
@@ -43,17 +53,34 @@ class AgentModerationService {
       }
     }
 
-    if (moderatedSpeech && /(.)\\1{7,}/.test(moderatedSpeech)) {
-      flags.push(buildFlag('repetition_spam', 'low', 'speech has repeated characters'));
-      moderatedSpeech = moderatedSpeech.replace(/(.)\\1{3,}/g, '$1$1$1');
+    if (moderatedSpeech) {
+      const repeated = /(.)\1{7,}/.test(moderatedSpeech);
+      if (repeated) {
+        flags.push(buildFlag('repetition_spam', 'low', 'speech has repeated characters'));
+        moderatedSpeech = moderatedSpeech.replace(/(.)\1{3,}/g, '$1$1$1');
+      }
     }
 
     const changed = moderatedSpeech !== speech;
     const blocked = speech && !moderatedSpeech;
-    const suspicious = flags.some((f) => f.severity === 'high');
-    if (changed && blocked && agent?.id) this.logger.warn(`Agent moderation blocked speech for ${agent.id}`);
+    const suspicious = flags.some((flag) => flag.severity === 'high');
 
-    return { decision: { ...decision, speech: moderatedSpeech }, moderation: { changed, blocked, suspicious, flags } };
+    if (changed && blocked && agent?.id) {
+      this.logger.warn(`Agent moderation blocked speech for ${agent.id}`);
+    }
+
+    return {
+      decision: {
+        ...decision,
+        speech: moderatedSpeech,
+      },
+      moderation: {
+        changed,
+        blocked,
+        suspicious,
+        flags,
+      },
+    };
   }
 }
 

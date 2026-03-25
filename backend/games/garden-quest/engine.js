@@ -12,6 +12,7 @@ const {
 } = require('../../database/postgres');
 const { createOpenAiDecisionClient } = require('../../services/openai-client');
 const { AgentDecisionService } = require('../../services/agents/AgentDecisionService');
+const { AgentWorldScheduler } = require('../../services/agents/AgentWorldScheduler');
 const {
   createWorldState,
   getHouseTowerElevators,
@@ -87,7 +88,7 @@ const LEADERBOARD_REFRESH_MS = 10000;
 const PLAYER_NICKNAME_MAX_LENGTH = 24;
 const DEFAULT_PLAYER_OUTFIT_COLOR = '#2563eb';
 const DEFAULT_AGENT_OUTFIT_COLORS = Object.freeze(['#7c3aed', '#0891b2', '#dc2626', '#16a34a', '#ea580c']);
-const AGENT_WORLD_SYNC_INTERVAL_MS = 30000;
+const AGENT_WORLD_SYNC_INTERVAL_MS = Math.max(1000, Number(config.AGENT_WORLD_SYNC_MS) || 30000);
 const PLAYER_CHAT_HISTORY_LIMIT = 20;
 const DEFAULT_CHAT_BLOCKED_WORDS = Object.freeze([
   'merda',
@@ -996,6 +997,24 @@ function chooseAgentSpawnPoint(existingActors) {
   return PLAYER_SPAWN_POINTS[Math.floor(Math.random() * PLAYER_SPAWN_POINTS.length)];
 }
 
+function buildLocalRuntimeInstanceId() {
+  return `${process.env.K_REVISION || process.env.K_SERVICE || 'local'}:${process.pid}`;
+}
+
+function buildDefaultRealmLeaseSnapshot() {
+  const localInstanceId = buildLocalRuntimeInstanceId();
+  return {
+    realmId: config.REALM_ID,
+    required: config.AGENT_WORLD_REQUIRE_LEASE,
+    localInstanceId,
+    ownerInstanceId: config.AGENT_WORLD_REQUIRE_LEASE ? null : localInstanceId,
+    isLeader: !config.AGENT_WORLD_REQUIRE_LEASE,
+    expiresAt: null,
+    lastHeartbeatAt: null,
+    lastError: null,
+  };
+}
+
 class AiGameEngine {
   constructor({ logger = console, agentRepository = null, secretVault = null } = {}) {
     this.logger = logger;
@@ -1008,6 +1027,13 @@ class AiGameEngine {
     this.pendingAgentDecisions = new Set();
     this.worldAgentSyncInFlight = false;
     this.playerSessionLoads = new Map();
+    this.realmLeaseSnapshot = buildDefaultRealmLeaseSnapshot();
+    this.agentWorldScheduler = new AgentWorldScheduler({
+      logger,
+      canRunSchedulers: () => this.canRunWorldSchedulers(),
+      syncWorldAgents: (now) => this.maybeSyncWorldAgents(now),
+      requestAgentDecisions: () => this.maybeRequestAgentDecisions(),
+    });
     this.state = this.createInitialState();
   }
 
@@ -1085,9 +1111,7 @@ class AiGameEngine {
 
     this.logEvent('ai_game_started');
     this.persistActorStats(this.state.ai);
-    this.syncWorldAgents().catch((error) => {
-      this.logger.error('Initial world agent sync failed:', error.message);
-    });
+    this.agentWorldScheduler.maybeSyncWorldAgents(Date.now());
     this.refreshLeaderboard().catch((error) => {
       this.logger.error('Initial leaderboard refresh failed:', error.message);
     });
@@ -1107,9 +1131,7 @@ class AiGameEngine {
         this.maybeRequestDecision().catch((error) => {
           this.logger.error('AI decision loop error:', error.message);
         });
-        this.maybeRequestAgentDecisions().catch((error) => {
-          this.logger.error('World agent decision loop error:', error.message);
-        });
+        this.agentWorldScheduler.maybeRequestAgentDecisions();
       }, 500);
     }
   }
@@ -1200,6 +1222,103 @@ class AiGameEngine {
         })),
       },
     };
+  }
+
+  async exportRuntimeSnapshot() {
+    const now = Date.now();
+    const publicState = await this.getPublicState(null);
+    const actorSnapshots = Array.from(this.state.players.values()).map((player) => ({
+      actorId: player.id,
+      actorType: 'player',
+      payload: this.buildSelfState(player, now),
+    }));
+
+    return {
+      tick: this.state.tick,
+      publicState,
+      actorSnapshots,
+    };
+  }
+
+  getRuntimeStatus() {
+    const lease = this.realmLeaseSnapshot || buildDefaultRealmLeaseSnapshot();
+    return {
+      startedAt: new Date(this.state.startedAt).toISOString(),
+      tick: this.state.tick,
+      playersOnline: this.state.players.size,
+      userAgentsOnline: this.state.userAgents.size,
+      pendingAgentDecisions: this.pendingAgentDecisions.size,
+      realmLease: {
+        realmId: lease.realmId || config.REALM_ID,
+        required: lease.required ?? config.AGENT_WORLD_REQUIRE_LEASE,
+        localInstanceId: lease.localInstanceId || buildLocalRuntimeInstanceId(),
+        ownerInstanceId: lease.ownerInstanceId || null,
+        isLeader: Boolean(lease.isLeader),
+        expiresAt: lease.expiresAt || null,
+        lastHeartbeatAt: lease.lastHeartbeatAt || null,
+        lastError: lease.lastError || null,
+      },
+    };
+  }
+
+  canRunWorldSchedulers() {
+    if (!config.AGENT_WORLD_ENABLED) {
+      return false;
+    }
+
+    if (!config.AGENT_WORLD_REQUIRE_LEASE) {
+      return true;
+    }
+
+    return Boolean(this.realmLeaseSnapshot?.isLeader);
+  }
+
+  setRealmLeaseSnapshot(snapshot = null, { evacuateOnLoss = true } = {}) {
+    const previousLeader = Boolean(this.realmLeaseSnapshot?.isLeader);
+    const localInstanceId = this.realmLeaseSnapshot?.localInstanceId || buildLocalRuntimeInstanceId();
+    const normalized = {
+      realmId: snapshot?.realmId || config.REALM_ID,
+      required: config.AGENT_WORLD_REQUIRE_LEASE,
+      localInstanceId,
+      ownerInstanceId: snapshot?.ownerInstanceId || (config.AGENT_WORLD_REQUIRE_LEASE ? null : localInstanceId),
+      isLeader: config.AGENT_WORLD_REQUIRE_LEASE ? Boolean(snapshot?.isLeader) : true,
+      expiresAt: snapshot?.expiresAt || null,
+      lastHeartbeatAt: snapshot?.checkedAt || snapshot?.lastHeartbeatAt || new Date().toISOString(),
+      lastError: snapshot?.lastError || null,
+    };
+    this.realmLeaseSnapshot = normalized;
+
+    if (!previousLeader && normalized.isLeader) {
+      this.logEvent('realm_lease_acquired', {
+        userId: normalized.ownerInstanceId || localInstanceId,
+        userName: 'realm-lease',
+        userAgent: 'backend-runtime',
+        details: `realm_id=${normalized.realmId}; owner_instance_id=${normalized.ownerInstanceId || '-'}; local_instance_id=${normalized.localInstanceId || '-'}`,
+      });
+    } else if (previousLeader && !normalized.isLeader) {
+      this.logEvent('realm_lease_lost', {
+        userId: normalized.ownerInstanceId || localInstanceId,
+        userName: 'realm-lease',
+        userAgent: 'backend-runtime',
+        details: `realm_id=${normalized.realmId}; owner_instance_id=${normalized.ownerInstanceId || '-'}; local_instance_id=${normalized.localInstanceId || '-'}; reason=lease_lost`,
+      });
+      if (evacuateOnLoss) {
+        this.evictWorldAgents('realm_lease_lost');
+      }
+    }
+  }
+
+  evictWorldAgents(reason = 'runtime_eviction') {
+    const totalAgents = this.state.userAgents.size;
+    if (totalAgents < 1) {
+      return 0;
+    }
+
+    this.state.userAgents.clear();
+    this.pendingAgentDecisions.clear();
+    this.state.nextWorldAgentSyncAt = Date.now() + AGENT_WORLD_SYNC_INTERVAL_MS;
+    this.logger.warn(`Evicted ${totalAgents} world agents (${reason})`);
+    return totalAgents;
   }
 
   buildAiPublicState(now) {
@@ -1751,7 +1870,7 @@ class AiGameEngine {
     this.advanceTreeRegrowth(now);
     this.cleanupExpiredGraves(now);
     this.cleanupInactivePlayers(now);
-    this.maybeSyncWorldAgents(now);
+    this.agentWorldScheduler.maybeSyncWorldAgents(now);
     this.advanceElevators(deltaSeconds, now);
   }
 
@@ -2312,15 +2431,15 @@ class AiGameEngine {
   }
 
   async syncWorldAgents() {
-    if (!this.agentRepository || this.worldAgentSyncInFlight) {
+    if (!this.canRunWorldSchedulers() || !this.agentRepository || this.worldAgentSyncInFlight) {
       return;
     }
 
     this.worldAgentSyncInFlight = true;
     try {
-      const allAgents = await this.agentRepository.listAllActiveAgents
-        ? await this.agentRepository.listAllActiveAgents()
-        : [];
+      const allAgents = this.agentRepository.listRunnableAgents
+        ? await this.agentRepository.listRunnableAgents(config.AGENT_WORLD_MAX_ACTIVE)
+        : (this.agentRepository.listAllActiveAgents ? await this.agentRepository.listAllActiveAgents() : []);
 
       const activeAgentIds = new Set(allAgents.map((a) => a.id));
 
@@ -2358,7 +2477,7 @@ class AiGameEngine {
   }
 
   maybeSyncWorldAgents(now) {
-    if (!config.AGENT_WORLD_ENABLED || !this.agentRepository) {
+    if (!this.canRunWorldSchedulers() || !this.agentRepository) {
       return;
     }
     if (now >= this.state.nextWorldAgentSyncAt) {
@@ -2369,13 +2488,18 @@ class AiGameEngine {
   }
 
   async maybeRequestAgentDecisions() {
-    if (!config.AGENT_WORLD_ENABLED) {
+    if (!this.canRunWorldSchedulers()) {
       return;
     }
 
     const now = Date.now();
+    const maxConcurrentDecisions = Math.max(1, Number(config.AGENT_WORLD_CONCURRENT_DECISIONS) || 2);
 
     for (const agent of this.state.userAgents.values()) {
+      if (this.pendingAgentDecisions.size >= maxConcurrentDecisions) {
+        break;
+      }
+
       if (agent.status === 'dead') {
         agent.nextDecisionAt = Math.max(agent.nextDecisionAt, agent.respawnAt || (now + 500));
         continue;
@@ -2427,12 +2551,13 @@ class AiGameEngine {
 
   applyAgentDecision(agent, decision, source) {
     const now = Date.now();
+    const decisionIntervalMs = Math.max(500, Number(config.AGENT_WORLD_DECISION_INTERVAL_MS) || config.AI_DECISION_INTERVAL_MS);
     agent.lastDecisionAt = now;
     agent.lastDecisionSource = source;
-    agent.nextDecisionAt = now + config.AI_DECISION_INTERVAL_MS;
+    agent.nextDecisionAt = now + decisionIntervalMs;
 
     if (agent.status === 'dead') {
-      agent.nextDecisionAt = Math.max(agent.nextDecisionAt, agent.respawnAt || (now + config.AI_DECISION_INTERVAL_MS));
+      agent.nextDecisionAt = Math.max(agent.nextDecisionAt, agent.respawnAt || (now + decisionIntervalMs));
       return;
     }
 
@@ -2601,7 +2726,7 @@ class AiGameEngine {
       return;
     }
 
-    const speed = config.AI_MOVE_SPEED;
+    const speed = Math.max(0.1, Number(config.AGENT_MOVE_SPEED) || config.AI_MOVE_SPEED);
     const step = speed * deltaSeconds;
     const normalizedDist = Math.max(dist, 0.001);
     const moveX = (dx / normalizedDist) * Math.min(step, dist);

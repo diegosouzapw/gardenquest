@@ -73,6 +73,14 @@ function getPool() {
   return pool;
 }
 
+function getStandaloneClientConfig() {
+  return {
+    connectionString: getConnectionString(),
+    ssl: buildSslConfig(),
+    keepAlive: true,
+  };
+}
+
 async function applyLockedDownApiPolicy(database, tableName, policyName) {
   await database.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
 
@@ -730,11 +738,15 @@ async function getDashboardData() {
 }
 
 module.exports = {
+  buildSslConfig,
+  getConnectionString,
   getGameActorProfile,
   getRecentVisibleChatMessages,
   getTopGameScores,
   getTopSoccerScorers,
   getDashboardData,
+  getPool,
+  getStandaloneClientConfig,
   incrementGameActorSoccerGoals,
   insertLog,
   insertChatMessage,

@@ -218,7 +218,7 @@ http://localhost:8081/auth/callback
 E abra o frontend uma vez com override de API:
 
 ```text
-http://localhost:5500/?apiUrl=http://localhost:8081
+http://localhost:5500/?api=http://localhost:8081
 ```
 
 O frontend salva esse valor no navegador e passa a usar `8081` nas proximas cargas.
@@ -226,6 +226,7 @@ O frontend salva esse valor no navegador e passa a usar `8081` nas proximas carg
 Para limpar esse override depois, rode no console do navegador:
 
 ```js
+localStorage.removeItem('img_platform_api_url');
 localStorage.removeItem('gardenquest.localApiUrl');
 ```
 
@@ -251,10 +252,27 @@ Esse comando mostra:
 
 ## Subindo o backend
 
+Modo recomendado (API + Worker):
+
 ```bash
 cd backend
 npm install
-node server.js
+npm run start:api
+```
+
+Em outro terminal:
+
+```bash
+cd backend
+npm run start:worker
+```
+
+Modo legado (monolito):
+
+```bash
+cd backend
+npm install
+npm run start:legacy
 ```
 
 Se o banco estiver correto, o backend deve subir em:
@@ -286,10 +304,11 @@ Exemplo com Live Server:
 3. subir o Postgres com `docker compose -f docker-compose.local.yml up -d`
 4. aplicar `backend/database/supabase-schema.sql` se o banco ainda estiver vazio
 5. rodar `cd backend && npm install && npm run check:env`
-6. rodar `cd backend && node server.js`
-7. rodar `cd frontend/public && python -m http.server 5500`
-8. abrir `http://localhost:5500`
-9. testar login com Google
+6. rodar `cd backend && npm run start:api`
+7. em outro terminal, rodar `cd backend && npm run start:worker`
+8. rodar `cd frontend/public && python -m http.server 5500`
+9. abrir `http://localhost:5500`
+10. testar login com Google
 
 ## Validacao rapida
 
@@ -339,7 +358,7 @@ No `netstat`, o que importa e:
 Correcao:
 
 - pare o processo que estiver em `LISTENING` na `8080`
-- suba o backend novamente com `node server.js`
+- suba o backend novamente com `npm run start:legacy` (ou `start:api` + `start:worker`)
 
 ### `FRONTEND_URL must use localhost... in APP_ENV=local`
 
@@ -368,12 +387,13 @@ Causas comuns:
 
 - `FRONTEND_URL` nao bate com a origem real do frontend
 - `GOOGLE_REDIRECT_URI` nao bate com o cadastrado no Google Cloud
-- o frontend ainda esta apontando para outra porta de API salva em `gardenquest.localApiUrl`
+- o frontend ainda esta apontando para outra porta de API salva em `img_platform_api_url` ou `gardenquest.localApiUrl`
 - login feito com conta fora de `ADMIN_GOOGLE_EMAILS` ao acessar o dashboard
 
 Se voce precisou testar a API em outra porta e quer voltar ao fluxo padrao:
 
 ```js
+localStorage.removeItem('img_platform_api_url');
 localStorage.removeItem('gardenquest.localApiUrl');
 location.href = 'http://localhost:5500/';
 ```

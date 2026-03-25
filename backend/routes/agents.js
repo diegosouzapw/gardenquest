@@ -25,6 +25,19 @@ function createAgentRoutes({ agentService, authMiddleware }) {
     }
   });
 
+  router.post('/:id/policy', async (req, res, next) => {
+    try {
+      const result = await agentService.updatePolicy({
+        ownerUserId: req.authUser.id,
+        agentId: req.params.id,
+        policy: req.body,
+      });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/:id/api-key', async (req, res, next) => {
     try {
       const result = await agentService.storeApiKey({
@@ -44,6 +57,31 @@ function createAgentRoutes({ agentService, authMiddleware }) {
         ownerUserId: req.authUser.id,
         agentId: req.params.id,
         endpoint: req.body,
+      });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/:id/resume', async (req, res, next) => {
+    try {
+      const result = await agentService.resumeAgent({
+        ownerUserId: req.authUser.id,
+        agentId: req.params.id,
+      });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/:id/runs', async (req, res, next) => {
+    try {
+      const result = await agentService.getAgentRuns({
+        ownerUserId: req.authUser.id,
+        agentId: req.params.id,
+        limit: Number.parseInt(req.query?.limit, 10) || 30,
       });
       res.json(result);
     } catch (error) {

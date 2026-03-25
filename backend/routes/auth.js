@@ -4,10 +4,18 @@ const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 const config = require('../config');
 const { insertLog, upsertUser } = require('../database/postgres');
+const {
+  createAuthSession,
+  getAuthSessionById,
+  listActiveAuthSessionsForUser,
+  revokeAllAuthSessionsForUser,
+  revokeAuthSession,
+} = require('../database/auth-sessions');
+const { requireAuth } = require('../middleware/authenticate');
 
 const AUTH_COOKIE_NAME = 'auth_token';
 const OAUTH_STATE_COOKIE_NAME = 'oauth_state';
-const COOKIE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const COOKIE_MAX_AGE_MS = Math.max(60_000, Number(config.SESSION_COOKIE_MAX_AGE_MS) || (24 * 60 * 60 * 1000));
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
 const OAUTH_STATE_BASE_URL = 'https://frontend.local';
 
@@ -192,6 +200,7 @@ function getNormalizedUser(decodedToken) {
     name: normalizeText(decodedToken?.name, 255),
     email: normalizeEmail(decodedToken?.email),
     picture: normalizeText(decodedToken?.picture, 2048),
+    sid: normalizeText(decodedToken?.sid, 128),
   };
 }
 
@@ -214,7 +223,45 @@ async function syncUserRecord(user) {
   }
 }
 
-function createAuthRoutes({ gameEngine = null } = {}) {
+function disconnectUserFromWorld(user, { gameEngine = null, worldGateway = null, reason = 'logout' } = {}) {
+  if (!user?.id) {
+    return;
+  }
+
+  if (worldGateway) {
+    worldGateway.disconnectPlayer(user.id, reason).catch((error) => {
+      console.error('Queued logout disconnect failed:', error.message);
+    });
+    return;
+  }
+
+  if (gameEngine) {
+    gameEngine.disconnectPlayer(user.id, reason);
+  }
+}
+
+function serializeSession(session, currentSessionId = null) {
+  if (!session) {
+    return null;
+  }
+
+  return {
+    id: session.id,
+    userEmail: session.userEmail || null,
+    userName: session.userName || null,
+    ip: session.ip || null,
+    userAgent: session.userAgent || null,
+    createdAt: session.createdAt || null,
+    issuedAt: session.issuedAt || null,
+    expiresAt: session.expiresAt || null,
+    lastSeenAt: session.lastSeenAt || null,
+    revokedAt: session.revokedAt || null,
+    revokeReason: session.revokeReason || null,
+    isCurrent: Boolean(currentSessionId) && session.id === currentSessionId,
+  };
+}
+
+function createAuthRoutes({ gameEngine = null, worldGateway = null } = {}) {
   const router = express.Router();
 
   router.get('/google', (req, res) => {
@@ -264,19 +311,37 @@ function createAuthRoutes({ gameEngine = null } = {}) {
       const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
       const { data: userInfo } = await oauth2.userinfo.get();
 
-      await syncUserRecord({
+      const normalizedUser = {
         id: normalizeText(userInfo.id, 128),
         name: normalizeText(userInfo.name, 255),
         email: normalizeEmail(userInfo.email),
         picture: normalizeText(userInfo.picture, 2048),
+      };
+
+      if (!normalizedUser.id) {
+        throw new Error('OAuth payload missing user ID');
+      }
+
+      await syncUserRecord(normalizedUser);
+
+      const authSessionId = crypto.randomUUID();
+      await createAuthSession({
+        id: authSessionId,
+        userId: normalizedUser.id,
+        userEmail: normalizedUser.email || null,
+        userName: normalizedUser.name || null,
+        ip: getRequestIp(req),
+        userAgent: normalizeText(req.headers['user-agent'], 512) || null,
+        expiresAt: new Date(Date.now() + COOKIE_MAX_AGE_MS),
       });
 
       const jwtToken = jwt.sign(
         {
-          id: userInfo.id,
-          name: userInfo.name,
-          email: normalizeEmail(userInfo.email),
-          picture: userInfo.picture,
+          id: normalizedUser.id,
+          name: normalizedUser.name,
+          email: normalizedUser.email,
+          picture: normalizedUser.picture,
+          sid: authSessionId,
         },
         config.JWT_SECRET,
         { expiresIn: config.JWT_EXPIRES_IN }
@@ -290,27 +355,76 @@ function createAuthRoutes({ gameEngine = null } = {}) {
     }
   });
 
-  router.get('/me', async (req, res) => {
-    const token = req.cookies?.[AUTH_COOKIE_NAME];
-    if (!token) {
-      return res.status(401).json({ error: 'Not authenticated' });
-    }
+  router.get('/me', requireAuth, async (req, res) => {
+    const user = req.authUser;
+    await syncUserRecord(user);
+    trackSilentEvent(req, 'page_view', user);
+    trackSilentEvent(req, 'connect', user);
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      picture: user.picture,
+      isAdmin: isAuthorizedAdminEmail(user.email),
+    });
+  });
 
+  router.get('/sessions', requireAuth, async (req, res, next) => {
     try {
-      const decoded = jwt.verify(token, config.JWT_SECRET);
-      const user = getNormalizedUser(decoded);
-      await syncUserRecord(user);
-      trackSilentEvent(req, 'page_view', user);
-      trackSilentEvent(req, 'connect', user);
-      res.json({
-        id: decoded.id,
-        name: decoded.name,
-        email: normalizeEmail(decoded.email),
-        picture: decoded.picture,
-        isAdmin: isAuthorizedAdminEmail(decoded.email),
+      const sessions = await listActiveAuthSessionsForUser(req.authUser.id, 50);
+      return res.json({
+        items: sessions.map((session) => serializeSession(session, req.authSession?.id || null)),
       });
     } catch (error) {
-      res.status(401).json({ error: 'Invalid or expired token' });
+      return next(error);
+    }
+  });
+
+  router.post('/sessions/:sessionId/revoke', requireAuth, async (req, res, next) => {
+    try {
+      const targetSessionId = normalizeText(req.params.sessionId, 128);
+      if (!targetSessionId) {
+        return res.status(400).json({ error: 'Invalid session ID.' });
+      }
+
+      const session = await getAuthSessionById(targetSessionId);
+      if (!session || session.userId !== req.authUser.id) {
+        return res.status(404).json({ error: 'Session not found.' });
+      }
+
+      const revoked = await revokeAuthSession(targetSessionId, 'user_revoke');
+      const isCurrentSession = targetSessionId === req.authSession?.id;
+
+      if (isCurrentSession) {
+        disconnectUserFromWorld(req.authUser, { gameEngine, worldGateway, reason: 'session_revoke' });
+        res.clearCookie(AUTH_COOKIE_NAME, getClearCookieOptions());
+      }
+
+      return res.json({
+        ok: true,
+        revoked: Boolean(revoked),
+        session: serializeSession(revoked || session, req.authSession?.id || null),
+      });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post('/logout-all', requireAuth, async (req, res, next) => {
+    try {
+      const revokedCount = await revokeAllAuthSessionsForUser(req.authUser.id, {
+        revokeReason: 'logout_all',
+      });
+
+      disconnectUserFromWorld(req.authUser, { gameEngine, worldGateway, reason: 'logout_all' });
+      res.clearCookie(AUTH_COOKIE_NAME, getClearCookieOptions());
+
+      return res.json({
+        ok: true,
+        revokedCount,
+      });
+    } catch (error) {
+      return next(error);
     }
   });
 
@@ -327,8 +441,13 @@ function createAuthRoutes({ gameEngine = null } = {}) {
       }
     }
 
-    if (user?.id && gameEngine) {
-      gameEngine.disconnectPlayer(user.id, 'logout');
+    if (user?.id) {
+      if (user.sid) {
+        revokeAuthSession(user.sid, 'logout').catch((error) => {
+          console.error('Session revoke on logout failed:', error.message);
+        });
+      }
+      disconnectUserFromWorld(user, { gameEngine, worldGateway, reason: 'logout' });
     }
 
     res.clearCookie(AUTH_COOKIE_NAME, getClearCookieOptions());

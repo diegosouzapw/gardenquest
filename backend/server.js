@@ -7,6 +7,7 @@ const createAgentRoutes = require('./routes/agents');
 const config = require('./config');
 const { verifyDatabaseConnection } = require('./database/postgres');
 const agentRepository = require('./database/agents');
+const authSessionRepository = require('./database/auth-sessions');
 const { SecretVault } = require('./services/crypto/SecretVault');
 const { AgentManagementService } = require('./services/agents/AgentManagementService');
 const { requireAuth } = require('./middleware/authenticate');
@@ -32,7 +33,22 @@ const agentService = new AgentManagementService({
   secretVault,
 });
 const aiGameEngine = new AiGameEngine({ agentRepository, secretVault });
-const realmLeaseService = new RealmLeaseService({ realmRepository });
+
+function applyRuntimeLeaseSnapshot(snapshot, { evacuateOnLoss = true } = {}) {
+  aiGameEngine.setRealmLeaseSnapshot?.(snapshot, { evacuateOnLoss });
+}
+
+const realmLeaseService = new RealmLeaseService({
+  realmRepository,
+  realmId: config.REALM_ID,
+  leaseTtlMs: config.REALM_LEASE_TTL_MS,
+  onLeaseAcquired: (snapshot) => {
+    applyRuntimeLeaseSnapshot(snapshot, { evacuateOnLoss: false });
+  },
+  onLeaseLost: (snapshot) => {
+    applyRuntimeLeaseSnapshot(snapshot, { evacuateOnLoss: true });
+  },
+});
 
 // Trust Cloud Run proxy for secure cookies
 app.set('trust proxy', 1);
@@ -79,7 +95,7 @@ app.use(express.json({ limit: '16kb' }));
 
 // Routes
 const systemRoutes = require('./routes/logs');
-const aiGameRoutes = createAiGameRoutes(aiGameEngine);
+const aiGameRoutes = createAiGameRoutes({ gameEngine: aiGameEngine });
 app.use('/auth', createAuthRoutes({ gameEngine: aiGameEngine }));
 app.use('/api/v1/platform', createPlatformRoutes());
 app.use('/api/v1/system', systemRoutes);
@@ -90,7 +106,29 @@ app.use('/api/v1/agents', createAgentRoutes({ agentService, authMiddleware: requ
 
 // Health check (Cloud Run requirement)
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  const runtimeStatus = aiGameEngine.getRuntimeStatus?.() || {};
+  const leaseSnapshot = realmLeaseService.getSnapshot?.() || {};
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    runtime: {
+      mode: 'legacy-monolith',
+      tick: runtimeStatus.tick || 0,
+      playersOnline: runtimeStatus.playersOnline || 0,
+      userAgentsOnline: runtimeStatus.userAgentsOnline || 0,
+      pendingAgentDecisions: runtimeStatus.pendingAgentDecisions || 0,
+      realmLease: {
+        realmId: leaseSnapshot.realmId || config.REALM_ID,
+        required: config.AGENT_WORLD_REQUIRE_LEASE,
+        localInstanceId: leaseSnapshot.localInstanceId || runtimeStatus.realmLease?.localInstanceId || null,
+        ownerInstanceId: leaseSnapshot.ownerInstanceId || runtimeStatus.realmLease?.ownerInstanceId || null,
+        isLeader: Boolean(leaseSnapshot.isLeader),
+        expiresAt: leaseSnapshot.expiresAt || null,
+        lastHeartbeatAt: leaseSnapshot.checkedAt || leaseSnapshot.lastHeartbeatAt || null,
+        lastError: leaseSnapshot.lastError || runtimeStatus.realmLease?.lastError || null,
+      },
+    },
+  });
 });
 
 // 404 handler
@@ -112,6 +150,7 @@ async function startServer() {
   try {
     await verifyDatabaseConnection();
     await agentRepository.ensureAgentTables();
+    await authSessionRepository.ensureAuthSessionTable();
     await realmRepository.ensureRealmLeaseTable();
     console.log('Database connection established.');
   } catch (error) {
@@ -137,16 +176,25 @@ async function startServer() {
     }
 
     aiGameEngine.start();
+    applyRuntimeLeaseSnapshot(realmLeaseService.getSnapshot?.(), { evacuateOnLoss: false });
 
     // Realm lease heartbeat (leader election)
     setInterval(() => {
-      realmLeaseService.heartbeat().catch((error) => {
-        console.error('Realm lease heartbeat failed:', error.message);
-      });
+      realmLeaseService.heartbeat()
+        .then((snapshot) => {
+          applyRuntimeLeaseSnapshot(snapshot, { evacuateOnLoss: true });
+        })
+        .catch((error) => {
+          console.error('Realm lease heartbeat failed:', error.message);
+        });
     }, Math.round(realmLeaseService.leaseTtlMs / 2));
-    realmLeaseService.heartbeat().catch((error) => {
-      console.error('Initial realm lease heartbeat failed:', error.message);
-    });
+    realmLeaseService.heartbeat()
+      .then((snapshot) => {
+        applyRuntimeLeaseSnapshot(snapshot, { evacuateOnLoss: true });
+      })
+      .catch((error) => {
+        console.error('Initial realm lease heartbeat failed:', error.message);
+      });
   });
 }
 

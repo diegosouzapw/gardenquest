@@ -158,7 +158,18 @@ function setupSecurity(app) {
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
 
-  app.use(['/auth/logout', '/api/v1/system/sync', '/api/v1/platform/events', '/api/v1/ai-game/command', '/api/v1/games/garden-quest/command'], (req, res, next) => {
+  app.use([
+    '/auth/logout',
+    '/auth/logout-all',
+    '/auth/sessions',
+    '/api/v1/system/sync',
+    '/api/v1/system/queue',
+    '/api/v1/system/sessions',
+    '/api/v1/system/agents',
+    '/api/v1/platform/events',
+    '/api/v1/ai-game/command',
+    '/api/v1/games/garden-quest/command',
+  ], (req, res, next) => {
     if (!isUnsafeMethod(req.method) || config.NODE_ENV === 'development') {
       return next();
     }
@@ -211,8 +222,10 @@ function setupSecurity(app) {
     [
       '/api/v1/ai-game/bootstrap-state',
       '/api/v1/ai-game/public-state',
+      '/api/v1/ai-game/public-state-live',
       '/api/v1/games/garden-quest/bootstrap-state',
       '/api/v1/games/garden-quest/public-state',
+      '/api/v1/games/garden-quest/public-state-live',
     ],
     aiPublicStateLimiter
   );

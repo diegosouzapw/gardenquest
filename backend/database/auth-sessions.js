@@ -78,4 +78,43 @@ async function listActiveAuthSessionsForUser(userId, limit = 20) {
   return result.rows;
 }
 
-module.exports = { ensureAuthSessionTable, createAuthSession, getAuthSessionById, getActiveAuthSession, touchAuthSession, revokeAuthSession, revokeAllAuthSessionsForUser, listActiveAuthSessionsForUser };
+async function listRecentActiveAuthSessions(limit = 50) {
+  const normalizedLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 50));
+  const result = await getPool().query(
+    `SELECT id, user_id AS "userId", user_email AS "userEmail", user_name AS "userName", ip, user_agent AS "userAgent", created_at AS "createdAt", issued_at AS "issuedAt", expires_at AS "expiresAt", last_seen_at AS "lastSeenAt"
+     FROM public.auth_sessions
+     WHERE revoked_at IS NULL AND expires_at > timezone('utc', now())
+     ORDER BY last_seen_at DESC, created_at DESC
+     LIMIT $1`,
+    [normalizedLimit]
+  );
+  return result.rows;
+}
+
+async function getAuthSessionOverview() {
+  const result = await getPool().query(
+    `SELECT
+      COUNT(*) FILTER (WHERE revoked_at IS NULL AND expires_at > timezone('utc', now())) AS active_count,
+      COUNT(*) FILTER (WHERE revoked_at IS NOT NULL) AS revoked_count,
+      COUNT(DISTINCT user_id) FILTER (WHERE revoked_at IS NULL AND expires_at > timezone('utc', now())) AS active_users
+     FROM public.auth_sessions`
+  );
+  return {
+    activeCount: Number(result.rows[0]?.active_count) || 0,
+    revokedCount: Number(result.rows[0]?.revoked_count) || 0,
+    activeUsers: Number(result.rows[0]?.active_users) || 0,
+  };
+}
+
+module.exports = {
+  ensureAuthSessionTable,
+  createAuthSession,
+  getAuthSessionById,
+  getActiveAuthSession,
+  touchAuthSession,
+  revokeAuthSession,
+  revokeAllAuthSessionsForUser,
+  listActiveAuthSessionsForUser,
+  listRecentActiveAuthSessions,
+  getAuthSessionOverview,
+};

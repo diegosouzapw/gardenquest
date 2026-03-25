@@ -34,7 +34,7 @@ Garden Quest e uma plataforma de jogos multiplayer online com backend em Node.js
 frontend/public/
 ├── index.html              → tela de login Google
 ├── hub.html                → hub de jogos
-├── game.html               → jogo 3D (Three.js)
+├── games/garden-quest/     → jogo 3D principal (Garden Quest)
 ├── dashboard.html          → painel administrativo
 ├── js/
 │   ├── auth.js             → logica de autenticacao
@@ -45,7 +45,9 @@ frontend/public/
 └── css/
 
 backend/
-├── server.js               → entry point monolitico (all-in-one)
+├── server.js               → entry point legado (all-in-one)
+├── api-server.js           → entry point HTTP (API + SSE)
+├── worker.js               → entry point runtime (fila + snapshots)
 ├── config/index.js          → configuracao centralizada (~30 variaveis de agentes)
 ├── middleware/
 │   ├── security.js          → helmet, cors, rate limit
@@ -131,7 +133,10 @@ backend/
 | `REALM_ID` | `gardenquest-world-01` | V6 |
 | `WORLD_COMMAND_POLL_MS` | `500` | V6 |
 | `WORLD_SNAPSHOT_FLUSH_MS` | `1000` | V6 |
+| `WORLD_RUNTIME_SNAPSHOT_TTL_MS` | `15000` | V6 |
 | `WORLD_EVENT_STREAM_ENABLED` | `true` | V7 |
+| `WORLD_EVENT_STREAM_SNAPSHOT_EVERY` | `1` | V8 |
+| `WORLD_RUNTIME_BUS_ENABLED` | `true` | V9 |
 | `AGENT_DEFAULT_DAILY_RUN_BUDGET` | `5000` | V10 |
 | `AGENT_DEFAULT_MIN_DECISION_INTERVAL_MS` | `2000` | V10 |
 | `AGENT_CIRCUIT_FAILURE_THRESHOLD` | `5` | V10 |
@@ -149,12 +154,33 @@ Banco local com Docker:
 docker compose -f docker-compose.local.yml up -d
 ```
 
-Backend:
+Validacao de ambiente:
+
+```bash
+npm --prefix backend run check:env
+```
+
+Backend (modo legado all-in-one):
 
 ```bash
 cd backend
 npm install
-node server.js
+npm run start:legacy
+```
+
+Backend (modo recomendado API + Worker em dois processos):
+
+```bash
+cd backend
+npm install
+npm run start:api
+```
+
+em outro terminal:
+
+```bash
+cd backend
+npm run start:worker
 ```
 
 Frontend:
@@ -163,6 +189,20 @@ Frontend:
 cd frontend/public
 python -m http.server 5500
 ```
+
+Validacao automatizada das tasks:
+
+```bash
+npm --prefix backend run test:tasks
+```
+
+Se a API estiver em porta diferente de `8080`, abra uma vez o frontend com override:
+
+```text
+http://localhost:5500/?api=http://localhost:18080
+```
+
+Depois, o valor fica salvo no browser (`img_platform_api_url`).
 
 ## Deploy
 
@@ -187,7 +227,9 @@ python -m http.server 5500
 
 - `docs/EVOLUTION_ROADMAP.md` — roadmap completo de V0 a V12
 - `docs/DEVELOPER_GUIDE.md` — guia de integracao de novos jogos
+- `docs/USER_GUIDE.md` — guia passo a passo para rodar e usar a solucao
 - `docs/implementation/` — plano detalhado de cada fase
+- `docs/implementation/RELATORIO_REVALIDACAO_2026-03-24.md` — auditoria tecnica completa da implementacao
 - `docs/strategy/` — documentacao estrategica (Fase 1)
 - `docs/evolution/` — documentacao de evolucao (Fase 2)
 - `docs/security-review.md` — revisao de seguranca

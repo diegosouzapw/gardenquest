@@ -13,12 +13,16 @@ class RealmLeaseService {
     realmId = 'gardenquest-world-01',
     ownerInstanceId = buildDefaultInstanceId(),
     leaseTtlMs = 20000,
+    onLeaseAcquired = null,
+    onLeaseLost = null,
     logger = console,
   } = {}) {
     this.realmRepository = realmRepository;
     this.realmId = realmId;
     this.ownerInstanceId = ownerInstanceId;
     this.leaseTtlMs = Math.max(3000, Number(leaseTtlMs) || 20000);
+    this.onLeaseAcquired = typeof onLeaseAcquired === 'function' ? onLeaseAcquired : null;
+    this.onLeaseLost = typeof onLeaseLost === 'function' ? onLeaseLost : null;
     this.logger = logger;
     this.currentLeaseToken = null;
     this.snapshot = {
@@ -32,6 +36,7 @@ class RealmLeaseService {
       metaJson: {},
       lastError: null,
       checkedAt: null,
+      lastHeartbeatAt: null,
     };
   }
 
@@ -48,11 +53,28 @@ class RealmLeaseService {
     return Boolean(this.snapshot.isLeader);
   }
 
+  notifyLeaseEvent(kind, snapshot) {
+    const handler = kind === 'acquired' ? this.onLeaseAcquired : this.onLeaseLost;
+    if (!handler) {
+      return;
+    }
+
+    try {
+      const maybePromise = handler(snapshot);
+      Promise.resolve(maybePromise).catch((error) => {
+        this.logger.error(`Realm lease ${kind} callback failed:`, error.message);
+      });
+    } catch (error) {
+      this.logger.error(`Realm lease ${kind} callback failed:`, error.message);
+    }
+  }
+
   async heartbeat() {
     if (!this.realmRepository?.acquireOrRenewRealmLease) {
       return this.getSnapshot();
     }
 
+    const wasLeader = Boolean(this.snapshot?.isLeader);
     const proposedToken = this.currentLeaseToken || crypto.randomUUID();
     const expiresAt = new Date(Date.now() + this.leaseTtlMs);
     const lease = await this.realmRepository.acquireOrRenewRealmLease({
@@ -87,7 +109,17 @@ class RealmLeaseService {
       metaJson: lease?.metaJson || {},
       lastError: null,
       checkedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
     };
+
+    if (!wasLeader && isLeader) {
+      this.logger.info(`Realm lease acquired for ${this.realmId} by ${this.ownerInstanceId}`);
+      this.notifyLeaseEvent('acquired', this.getSnapshot());
+    }
+    if (wasLeader && !isLeader) {
+      this.logger.warn(`Realm lease lost for ${this.realmId} by ${this.ownerInstanceId}`);
+      this.notifyLeaseEvent('lost', this.getSnapshot());
+    }
 
     return this.getSnapshot();
   }
@@ -110,6 +142,7 @@ class RealmLeaseService {
         metaJson: lease?.metaJson || {},
         lastError: null,
         checkedAt: new Date().toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
       };
       return this.getSnapshot();
     } catch (error) {
@@ -117,6 +150,7 @@ class RealmLeaseService {
         ...this.snapshot,
         lastError: error.message,
         checkedAt: new Date().toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
       };
       return this.getSnapshot();
     }
@@ -128,6 +162,7 @@ class RealmLeaseService {
     }
 
     try {
+      const wasLeader = Boolean(this.snapshot?.isLeader);
       const released = await this.realmRepository.releaseRealmLease({
         realmId: this.realmId,
         ownerInstanceId: this.ownerInstanceId,
@@ -143,7 +178,12 @@ class RealmLeaseService {
         expiresAt: null,
         renewedAt: null,
         checkedAt: new Date().toISOString(),
+        lastHeartbeatAt: new Date().toISOString(),
       };
+
+      if (wasLeader) {
+        this.notifyLeaseEvent('lost', this.getSnapshot());
+      }
 
       return released;
     } catch (error) {

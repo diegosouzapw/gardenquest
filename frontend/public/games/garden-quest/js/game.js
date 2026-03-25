@@ -17,6 +17,8 @@
     let isGameRunning = true;
     let movementSyncInterval = null;
     let statePollTimeout = null;
+    let stateStreamSource = null;
+    let stateStreamConnected = false;
     let heldMovementFlushTimeout = null;
     let loadingScreenTimeout = null;
     let animationId = null;
@@ -126,6 +128,11 @@
         if (animationId) cancelAnimationFrame(animationId);
         if (movementSyncInterval) clearInterval(movementSyncInterval);
         if (statePollTimeout) clearTimeout(statePollTimeout);
+        if (stateStreamSource) {
+            stateStreamSource.close();
+            stateStreamSource = null;
+        }
+        stateStreamConnected = false;
         if (heldMovementFlushTimeout) clearTimeout(heldMovementFlushTimeout);
         if (loadingScreenTimeout) clearTimeout(loadingScreenTimeout);
 
@@ -1894,6 +1901,65 @@
         }, delayMs);
     }
 
+    function stopStateStream() {
+        if (stateStreamSource) {
+            stateStreamSource.close();
+            stateStreamSource = null;
+        }
+        stateStreamConnected = false;
+    }
+
+    function startStateStream() {
+        if (typeof window.EventSource !== 'function') {
+            return false;
+        }
+
+        stopStateStream();
+
+        try {
+            const streamUrl = getGameApiUrl('/stream');
+            const source = new EventSource(streamUrl, { withCredentials: true });
+            stateStreamSource = source;
+
+            source.onopen = () => {
+                stateStreamConnected = true;
+                if (statePollTimeout) {
+                    window.clearTimeout(statePollTimeout);
+                    statePollTimeout = null;
+                }
+            };
+
+            source.addEventListener('snapshot', (event) => {
+                try {
+                    const snapshot = JSON.parse(event.data || '{}');
+                    applySnapshot(snapshot);
+                } catch (error) {
+                    console.error('Failed to parse snapshot SSE payload:', error);
+                }
+            });
+
+            source.addEventListener('delta', () => {
+                // Current client authority logic expects full snapshots.
+                // Request a one-shot full state refresh when delta updates are enabled.
+                fetchGameState().catch(() => {});
+            });
+
+            source.addEventListener('world_event_batch', () => {});
+
+            source.onerror = () => {
+                if (!isGameRunning) return;
+                stopStateStream();
+                scheduleNextStateFetch(STATE_POLL_BACKOFF_MS);
+            };
+
+            return true;
+        } catch (error) {
+            console.error('Failed to initialize SSE stream:', error);
+            stopStateStream();
+            return false;
+        }
+    }
+
     async function sendCommand(type, payload = {}, { suppressErrorToast = false } = {}) {
         const response = await fetch(getGameApiUrl('/command'), {
             method: 'POST',
@@ -2699,17 +2765,27 @@
     }
 
     function createRemotePlayerState(playerState, serverTimeMs = 0) {
+        const isAgent = playerState.actorType === 'agent';
         const palette = buildAppearancePalette(playerState.appearance);
+        const agentPalette = isAgent ? {
+            shirtColor: 0x0d9488,
+            pantsColor: 0x134e4a,
+            shoeColor: 0x475569,
+            hairColor: 0x64748b,
+        } : null;
         const remotePlayer = new Player(scene, playerState.name, {
             spawnPosition: playerState.position,
-            shirtColor: palette.shirtColor,
-            pantsColor: palette.pantsColor,
-            shoeColor: palette.shoeColor,
-            hairColor: palette.hairColor,
+            shirtColor: isAgent ? agentPalette.shirtColor : palette.shirtColor,
+            pantsColor: isAgent ? agentPalette.pantsColor : palette.pantsColor,
+            shoeColor: isAgent ? agentPalette.shoeColor : palette.shoeColor,
+            hairColor: isAgent ? agentPalette.hairColor : palette.hairColor,
         });
-        const remoteUi = attachActorUi(remotePlayer, playerState.name, {
-            backgroundColor: 'rgba(17, 24, 39, 0.84)',
-            textColor: '#f8fafc',
+        const displayName = isAgent ? `\u{1F916} ${playerState.name || 'Agente'}` : playerState.name;
+        const labelBg = isAgent ? 'rgba(13, 148, 136, 0.88)' : 'rgba(17, 24, 39, 0.84)';
+        const labelColor = isAgent ? '#f0fdfa' : '#f8fafc';
+        const remoteUi = attachActorUi(remotePlayer, displayName, {
+            backgroundColor: labelBg,
+            textColor: labelColor,
             width: 288,
             height: 64,
             scaleX: 3.2,
@@ -2738,6 +2814,7 @@
             targetRotationY: playerState.rotationY || Math.PI,
             appearanceSignature: getAppearanceSignature(playerState.appearance),
             samples: [],
+            isAgent: isAgent,
         };
 
         pushActorSample(remotePlayerState.samples, playerState, serverTimeMs);
@@ -2937,9 +3014,11 @@
                 remoteState.appearanceSignature = nextAppearanceSignature;
             }
 
-            updateLabelSprite(remoteState.labelSprite, playerState.name || 'Jogador', {
-                backgroundColor: 'rgba(17, 24, 39, 0.84)',
-                textColor: '#f8fafc',
+            const isRemoteAgent = remoteState.isAgent || playerState.actorType === 'agent';
+            const remoteLabelName = isRemoteAgent ? `\u{1F916} ${playerState.name || 'Agente'}` : (playerState.name || 'Jogador');
+            updateLabelSprite(remoteState.labelSprite, remoteLabelName, {
+                backgroundColor: isRemoteAgent ? 'rgba(13, 148, 136, 0.88)' : 'rgba(17, 24, 39, 0.84)',
+                textColor: isRemoteAgent ? '#f0fdfa' : '#f8fafc',
             });
             updateActorModelState(remoteState, playerState);
             updateActorVitals(remoteState, playerState);
@@ -2959,7 +3038,9 @@
 
     async function fetchGameState() {
         if (stateSync.isFetching) {
-            scheduleNextStateFetch();
+            if (!stateStreamConnected) {
+                scheduleNextStateFetch();
+            }
             return;
         }
 
@@ -2993,7 +3074,7 @@
             console.error('Failed to fetch game state:', error);
         } finally {
             stateSync.isFetching = false;
-            if (shouldScheduleNext) {
+            if (shouldScheduleNext && !stateStreamConnected) {
                 scheduleNextStateFetch(nextDelayMs);
             }
         }
@@ -3041,7 +3122,12 @@
     saveStoredProfile(user, initialProfile);
     updateCamera(0, true);
 
-    fetchGameState();
+    const streamStarted = startStateStream();
+    if (!streamStarted) {
+        fetchGameState();
+    } else {
+        scheduleNextStateFetch(1500);
+    }
     movementSyncInterval = setInterval(flushMovementInput, INPUT_SYNC_INTERVAL_MS);
 
     function animate() {
