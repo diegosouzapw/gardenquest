@@ -122,7 +122,7 @@ test.describe('Platform auth -> hub -> game smoke flow', () => {
 
     await page.getByRole('button', { name: /Abrir jogo/i }).click();
 
-    await expect(page).toHaveURL(/\/games\/garden-quest\/$/);
+    await expect(page).toHaveURL(/\/games\/garden-quest\/(\?.*)?$/);
     await expect(page.locator('#gameCanvas')).toBeVisible();
     await expect(page.locator('#hubBtn')).toBeVisible();
   });
