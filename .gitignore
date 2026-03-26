@@ -52,3 +52,6 @@ auxiliares/
 # Scripts Utilitários
 kill-8080.bat
 kill-8080.ps1
+
+# Pasta de Teste de PR
+temp_testing/
